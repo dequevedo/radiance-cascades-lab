@@ -9,6 +9,7 @@ layout(set = 0, binding = 2, rgba16f) uniform restrict writeonly image3D vox_emi
 layout(set = 0, binding = 3, rgba8) uniform restrict writeonly image3D vox_mat; // metallic, roughness, -, 1 = surface
 layout(set = 0, binding = 4, rgba8) uniform restrict writeonly image3D vox_base; // base colour (what a metal reflects with)
 layout(set = 0, binding = 8, rgba8) uniform restrict writeonly image3D vox_tint; // see-through surfaces: the colour they let through
+layout(set = 0, binding = 10, r32ui) uniform restrict uimage3D emit_w; // per voxel: the largest coverage of a glowing triangle
 layout(set = 0, binding = 7, r32i) uniform restrict iimage3D vox_wind; // winding-number steps along +x (fill_solid.comp)
 layout(set = 0, binding = 5, std430) restrict readonly buffer Verts {
 	float v[]; // world-space positions, x y z packed
@@ -149,6 +150,28 @@ void main() {
 	}
 	ivec3 lo = clamp(ivec3(floor(lo_f)), ivec3(0), dims - 1);
 	ivec3 hi = clamp(ivec3(floor(hi_f)), ivec3(0), dims - 1);
+	// A glowing surface smaller than a voxel would light the scene as if it filled the voxel (an 18 cm traffic-light lens in
+	// 25 cm voxels glowed like a lens twice its size). Its emission is scaled by how much of the voxels it touches it really
+	// covers: its area (in voxel faces) over the voxels it touches in one layer (the conservative test touches a ring of voxels
+	// round the edges too: the 1.5 allows for that, so a large panel keeps its full emission).
+	vec3 emission = pc.emission.rgb;
+	float cover = 1.0;
+	if (dot(emission, vec3(1.0)) > 0.0) {
+		vec3 nrm = cross(b - a, c - a);
+		float area = 0.5 * length(nrm);
+		vec3 an = abs(nrm);
+		int axis = an.x > an.y ? (an.x > an.z ? 0 : 2) : (an.y > an.z ? 1 : 2);
+		float layers = float(hi[axis] - lo[axis] + 1);
+		float touched = 0.0;
+		for (int z = lo.z; z <= hi.z; z++) {
+			for (int y = lo.y; y <= hi.y; y++) {
+				for (int x = lo.x; x <= hi.x; x++) {
+					touched += tri_box_overlap(vec3(x, y, z) + 0.5, vec3(0.5), a, b, c) ? 1.0 : 0.0;
+				}
+			}
+		}
+		cover = clamp(1.5 * area * layers / max(touched, 1.0), 0.0, 1.0);
+	}
 	for (int z = lo.z; z <= hi.z; z++) {
 		for (int y = lo.y; y <= hi.y; y++) {
 			for (int x = lo.x; x <= hi.x; x++) {
@@ -161,7 +184,10 @@ void main() {
 					imageStore(vox_mat, ivec3(x, y, z), vec4(pc.mat.x, pc.mat.y, 0.0, 1.0));
 					imageStore(vox_base, ivec3(x, y, z), vec4(albedo, 1.0));
 					if (dot(pc.emission.rgb, vec3(1.0)) > 0.0) {
-						imageStore(vox_emit, ivec3(x, y, z), vec4(pc.emission.rgb, 1.0));
+						imageStore(vox_emit, ivec3(x, y, z), vec4(emission, 1.0));
+						// The voxel keeps the largest coverage of the triangles that touch it (a thin face must not dim a wide one);
+						// fill_solid.comp applies it.
+						imageAtomicMax(emit_w, ivec3(x, y, z), uint(cover * 65535.0));
 					}
 				}
 			}

@@ -704,7 +704,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow") or user_args.has("--traffic")
 	if not harness:
 		_start_interactive()
 		return
@@ -718,6 +718,17 @@ func _run() -> void:
 		await _build_test(report)
 	if user_args.has("--follow"):
 		await _follow_test(report)
+	if user_args.has("--traffic"):
+		# A traffic light of block (1, 1) seen from above: where its green lens throws light on the sidewalk.
+		anim_auto = false
+		var spot: Array = shop.traffic_spots[6]
+		var tp: Vector3 = spot[0]
+		cam.position = tp + spot[1] * 3.0 - spot[2] * 2.0 + Vector3(0, 7.0, 0)
+		cam.look_at(tp + spot[2] * 2.5)
+		for mode in ["world", "world_gi"]:
+			_set_mode(mode)
+			await _frames(60)
+			await _shot("traffic_%s.png" % mode)
 	if user_args.has("--mattest"):
 		anim_auto = false
 		_pose("materials")

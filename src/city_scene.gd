@@ -50,6 +50,7 @@ var car_lights: Array[SpotLight3D] = []
 var _route: Array[Vector3] = [] # the moving car's loop
 var _route_len := 0.0
 var _lamps: Array[OmniLight3D] = []
+var traffic_spots := [] # [position, towards the street, facing] of every traffic light
 
 
 # --- a mesh builder: one set of arrays per material ---------------------------------------------------------------
@@ -354,6 +355,7 @@ func _street_lamp(S: Node3D, p: Vector3, out: Vector3) -> void:
 
 
 func _traffic_light(p: Vector3, out: Vector3, dir: Vector3) -> void:
+	traffic_spots.append([p, out, dir])
 	var b := _part("base")
 	b.cylinder(p, 0.06, 3.2, Color(0.18, 0.2, 0.18), 8)
 	var hb := Basis(Vector3.UP, atan2(dir.x, dir.z))

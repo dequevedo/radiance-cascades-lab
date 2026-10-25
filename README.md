@@ -11,7 +11,7 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 
 ![The curved corridor next to the store, and the same view as a heat map of the bounce light](docs/readme/corridor.jpg)
 
-![A neon sign as the only light at the end of the corridor](docs/readme/neon_sign.jpg)
+![A neon sign as the only light at the end of the corridor](docs/readme/corridor_neon.jpg)
 
 ![The materials room: Godot alone and with radiance cascades](docs/readme/materials.jpg)
 
@@ -31,11 +31,11 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 parked cars, traffic lights, bus stops and neon signs, and a car whose headlights are spot lights. The GI volume is much smaller
 than the city and follows the camera.
 
-![The procedural city from above](docs/readme/city_rooftops.jpg)
+![The procedural city from above](docs/readme/city_overview.jpg)
 
-![A wet street at night](docs/readme/city_street.jpg)
+![A wet street at night](docs/readme/city_wet_street.jpg)
 
-![The market](docs/readme/city_market.jpg)
+![The market](docs/readme/city_stalls.jpg)
 
 ## How it works
 

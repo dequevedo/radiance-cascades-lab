@@ -131,6 +131,7 @@ var _has_glass := false
 var _glass_min := Vector3.ZERO
 var _glass_max := Vector3.ZERO
 var _vox_nrm := RID() # per voxel: surface normal (written by inject.comp with the light)
+var _vox_emit_w := RID() # per voxel: coverage of the glowing triangles that touch it (fill_solid.comp scales the emission)
 var _vox_wind := RID() # per voxel: winding-number steps of the closed meshes along +x (filled in by fill_solid.comp)
 var _vox_dyn_emit := RID() # emission of the moving objects
 var _spec_tex := RID() # per pixel: glossy reflection, metallic
@@ -570,7 +571,7 @@ func free_resources() -> void:
 
 func _free_volume() -> void:
 	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1],
-			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _amb_iso, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint]:
+			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _amb_iso, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint, _vox_emit_w]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_probe_keep = RID()
@@ -580,6 +581,7 @@ func _free_volume() -> void:
 	_vox_mat = RID()
 	_vox_base = RID()
 	_vox_wind = RID()
+	_vox_emit_w = RID()
 	_vox_nrm = RID()
 	_vox_tint = RID()
 	_vox_dyn_emit = RID()
@@ -690,6 +692,7 @@ func rebuild() -> void:
 	_vox_mat = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_base = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_wind = _tex3d(dims, RenderingDevice.DATA_FORMAT_R32_SINT)
+	_vox_emit_w = _tex3d(dims, RenderingDevice.DATA_FORMAT_R32_UINT)
 	_vox_nrm = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_SNORM)
 	_vox_tint = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_dyn_emit = _tex3d(dims, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
@@ -786,6 +789,7 @@ func _voxelize_static() -> void:
 	rd.texture_clear(_vox_mat, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_base, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_wind, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	rd.texture_clear(_vox_emit_w, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_tint, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	if _mesh_surf.size() > 0 and _pipe.has("voxelize_mesh"):
 		if _mesh_dirty or not _vert_buf.is_valid():
@@ -800,7 +804,7 @@ func _voxelize_static() -> void:
 			_col_buf = rd.storage_buffer_create(cb.size(), cb)
 			_mesh_dirty = false
 		var set_m := UniformSetCacheRD.get_cache(_shader["voxelize_mesh"], 0,
-			[_ubo_u(), _img(1, _vox_static), _img(2, _vox_emit), _img(3, _vox_mat), _img(4, _vox_base), _img(7, _vox_wind), _img(8, _vox_tint), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_vert_buf]),
+			[_ubo_u(), _img(1, _vox_static), _img(2, _vox_emit), _img(3, _vox_mat), _img(4, _vox_base), _img(7, _vox_wind), _img(8, _vox_tint), _img(10, _vox_emit_w), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_vert_buf]),
 			 _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 6, [_idx_buf]), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 9, [_col_buf])])
 		var cl := rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize_mesh"])
@@ -825,11 +829,14 @@ func _voxelize_static() -> void:
 		rd.compute_list_end()
 		# Solid fill: every voxel whose centre is inside a closed mesh (winding number != 0, summed along +x) becomes solid, so
 		# a box is a block and not a shell with an empty inside that probes could sit in and see the inner faces from.
-		if solid_fill and _pipe.has("fill_solid"):
-			var set_f := UniformSetCacheRD.get_cache(_shader["fill_solid"], 0, [_ubo_u(), _img(1, _vox_static), _img(2, _vox_wind)])
+		# The same pass scales every glowing voxel by its coverage (small glowing surfaces in big voxels).
+		if _pipe.has("fill_solid"):
+			var set_f := UniformSetCacheRD.get_cache(_shader["fill_solid"], 0, [_ubo_u(), _img(1, _vox_static), _img(2, _vox_wind),
+				_img(3, _vox_emit), _img(4, _vox_emit_w)])
 			cl = rd.compute_list_begin()
 			rd.compute_list_bind_compute_pipeline(cl, _pipe["fill_solid"])
 			rd.compute_list_bind_uniform_set(cl, set_f, 0)
+			rd.compute_list_set_push_constant(cl, PackedFloat32Array([1.0 if solid_fill else 0.0, 0.0, 0.0, 0.0]).to_byte_array(), 16)
 			rd.compute_list_dispatch(cl, ceili(dims.y / 8.0), ceili(dims.z / 8.0), 1)
 			rd.compute_list_end()
 	else:

@@ -1,4 +1,4 @@
-// One thread = one column of voxels along x: sums the winding-number steps the closed meshes left in vox_wind
+// One thread = one column of voxels along x: scales every glowing voxel by its coverage, and sums the winding-number steps the closed meshes left in vox_wind
 // (voxelize_mesh.comp) and marks every voxel whose centre is inside one (sum not 0) as solid. Its colour does not matter:
 // an inside voxel has no empty neighbour, so it is never lit and never seen; it only blocks rays and switches off probes.
 
@@ -6,6 +6,12 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 1, rgba8) uniform restrict image3D vox_albedo;
 layout(set = 0, binding = 2, r32i) uniform restrict readonly iimage3D vox_wind;
+layout(set = 0, binding = 3, rgba16f) uniform restrict image3D vox_emit;
+layout(set = 0, binding = 4, r32ui) uniform restrict readonly uimage3D emit_w; // coverage of the glowing voxels (voxelize_mesh.comp)
+
+layout(push_constant, std430) uniform Fill {
+	vec4 a; // x: 1 = fill the inside of closed meshes
+} pc;
 
 void main() {
 	ivec3 dims = ivec3(P.vol_dims.xyz);
@@ -16,8 +22,13 @@ void main() {
 	}
 	int w = 0;
 	for (int x = 0; x < dims.x; x++) {
+		uint cw = imageLoad(emit_w, ivec3(x, y, z)).r;
+		if (cw > 0u) {
+			vec4 e = imageLoad(vox_emit, ivec3(x, y, z));
+			imageStore(vox_emit, ivec3(x, y, z), vec4(e.rgb * (float(cw) / 65535.0), e.a));
+		}
 		w += imageLoad(vox_wind, ivec3(x, y, z)).r;
-		if (w != 0 && imageLoad(vox_albedo, ivec3(x, y, z)).a < 0.5) {
+		if (pc.a.x > 0.5 && w != 0 && imageLoad(vox_albedo, ivec3(x, y, z)).a < 0.5) {
 			imageStore(vox_albedo, ivec3(x, y, z), vec4(0.0, 0.0, 0.0, 1.0));
 		}
 	}

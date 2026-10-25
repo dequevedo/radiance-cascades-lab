@@ -934,3 +934,21 @@ city Low (40 cm voxels) 3.25 ms.
 
 **Tried and dropped:** half precision (`mediump`) in the final gather: no measurable gain (the pass is bound by texture reads,
 not arithmetic), and the machine was too busy for a clean A/B.
+
+
+---
+
+# Step 19: small glowing things glowed too much
+
+A green traffic light lit a bright patch of the sidewalk a couple of metres in front of it. The place was right: a lens facing
+along the street, 3 m up, lights the ground most at about h / sqrt(3) = 1.8 m in front of it, not under the pole. The strength was
+not: an 18 cm lens in 25 cm voxels makes a whole voxel glow, a lens twice its size. The same for car tail lights, thin neon tubes,
+the bulbs of the string lights.
+
+Now each glowing triangle works out how much of the voxels it touches it really covers (its area over the voxels it touches in
+one layer, with some allowance for the ring of voxels the conservative test adds round its edges), each voxel keeps the largest
+coverage of the triangles that touch it (`imageAtomicMax`, so a thin side face cannot dim a wide front face), and the fill pass
+scales the voxel's emission by it. Large glowing panels (shop windows) keep their light; small ones shrink to their size. The
+rooms' neon sign (5 x 12 cm, 10 cm voxels) lost about a third of its bounce light, so its energy went from 4 to 6.
+
+`--city --traffic` photographs a traffic light from above.

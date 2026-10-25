@@ -809,5 +809,5 @@ func build_corridor(parent: Node) -> void:
 	var nm := neon.material_override as StandardMaterial3D
 	nm.emission_enabled = true
 	nm.emission = Color(1.0, 0.25, 0.6)
-	nm.emission_energy_multiplier = 4.0
+	nm.emission_energy_multiplier = 6.0
 	neon.name = "NeonSign"
