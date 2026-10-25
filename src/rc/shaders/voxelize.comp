@@ -1,0 +1,71 @@
+// One thread = one triangle: writes its albedo into every voxel it touches.
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, rgba8) uniform restrict writeonly image3D vox_albedo;
+layout(set = 0, binding = 5, std430) restrict readonly buffer Tris {
+	vec4 t[]; // per triangle: a, b, c (world), albedo.rgb
+} tris;
+
+layout(push_constant, std430) uniform Voxelize {
+	vec4 a; // triangle count
+} pc;
+
+bool axis_separates(vec3 axis, vec3 v0, vec3 v1, vec3 v2, vec3 h) {
+	float p0 = dot(v0, axis);
+	float p1 = dot(v1, axis);
+	float p2 = dot(v2, axis);
+	float r = h.x * abs(axis.x) + h.y * abs(axis.y) + h.z * abs(axis.z);
+	return max(max(p0, p1), p2) < -r || min(min(p0, p1), p2) > r;
+}
+
+// Akenine-Moller triangle / box overlap (box centred at c with half size h).
+bool tri_box_overlap(vec3 c, vec3 h, vec3 a, vec3 b, vec3 d) {
+	vec3 v0 = a - c;
+	vec3 v1 = b - c;
+	vec3 v2 = d - c;
+	vec3 e0 = v1 - v0;
+	vec3 e1 = v2 - v1;
+	vec3 e2 = v0 - v2;
+	vec3 ex = vec3(1.0, 0.0, 0.0);
+	vec3 ey = vec3(0.0, 1.0, 0.0);
+	vec3 ez = vec3(0.0, 0.0, 1.0);
+	if (axis_separates(cross(ex, e0), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ex, e1), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ex, e2), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ey, e0), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ey, e1), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ey, e2), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ez, e0), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ez, e1), v0, v1, v2, h)) return false;
+	if (axis_separates(cross(ez, e2), v0, v1, v2, h)) return false;
+	if (max(max(v0.x, v1.x), v2.x) < -h.x || min(min(v0.x, v1.x), v2.x) > h.x) return false;
+	if (max(max(v0.y, v1.y), v2.y) < -h.y || min(min(v0.y, v1.y), v2.y) > h.y) return false;
+	if (max(max(v0.z, v1.z), v2.z) < -h.z || min(min(v0.z, v1.z), v2.z) > h.z) return false;
+	vec3 n = cross(e0, e1);
+	return abs(dot(n, v0)) <= h.x * abs(n.x) + h.y * abs(n.y) + h.z * abs(n.z);
+}
+
+void main() {
+	uint i = gl_GlobalInvocationID.x;
+	if (i >= uint(pc.a.x)) {
+		return;
+	}
+	float vs = P.vol_min.w;
+	vec3 a = (tris.t[i * 4u].xyz - P.vol_min.xyz) / vs;
+	vec3 b = (tris.t[i * 4u + 1u].xyz - P.vol_min.xyz) / vs;
+	vec3 c = (tris.t[i * 4u + 2u].xyz - P.vol_min.xyz) / vs;
+	vec3 albedo = tris.t[i * 4u + 3u].rgb;
+	ivec3 dims = ivec3(P.vol_dims.xyz);
+	ivec3 lo = clamp(ivec3(floor(min(min(a, b), c))), ivec3(0), dims - 1);
+	ivec3 hi = clamp(ivec3(floor(max(max(a, b), c))), ivec3(0), dims - 1);
+	for (int z = lo.z; z <= hi.z; z++) {
+		for (int y = lo.y; y <= hi.y; y++) {
+			for (int x = lo.x; x <= hi.x; x++) {
+				if (tri_box_overlap(vec3(x, y, z) + 0.5, vec3(0.5), a, b, c)) {
+					imageStore(vox_albedo, ivec3(x, y, z), vec4(albedo, 1.0));
+				}
+			}
+		}
+	}
+}

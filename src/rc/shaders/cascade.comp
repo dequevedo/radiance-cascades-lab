@@ -1,0 +1,144 @@
+// One thread = one ray of one probe of cascade n. Traces its interval through the depth buffer,
+// then merges with the four nearest probes of cascade n + 1 where the ray found nothing.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 2, rgba16f) uniform restrict readonly image2D color_img;
+layout(set = 0, binding = 3, rgba16f) uniform restrict readonly image2D upper_img;
+layout(set = 0, binding = 4, rgba16f) uniform restrict writeonly image2D out_img;
+
+layout(push_constant, std430) uniform Cascade {
+	vec4 a; // index, directions per axis (a_n), interval start (px), interval end (px)
+	vec4 b; // is top cascade, max steps, unused, unused
+} pc;
+
+vec3 pos_at(ivec2 p) {
+	ivec2 q = clamp(p, ivec2(0), ivec2(P.screen.xy) - 1);
+	return view_pos(q, texelFetch(depth_tex, q, 0).r);
+}
+
+// Camera-facing surface normal at a pixel, from the depth buffer.
+vec3 normal_at(ivec2 p) {
+	vec3 c = pos_at(p);
+	vec3 xp = pos_at(p + ivec2(1, 0));
+	vec3 xm = pos_at(p - ivec2(1, 0));
+	vec3 yp = pos_at(p + ivec2(0, 1));
+	vec3 ym = pos_at(p - ivec2(0, 1));
+	vec3 dx = abs(xp.z - c.z) < abs(xm.z - c.z) ? xp - c : c - xm;
+	vec3 dy = abs(yp.z - c.z) < abs(ym.z - c.z) ? yp - c : c - ym;
+	vec3 n = normalize(cross(dx, dy));
+	return dot(n, c) > 0.0 ? -n : n;
+}
+
+vec3 sample_upper(ivec2 probe, ivec2 dij, int an, float depth0) {
+	int au = an * 2;
+	ivec2 gisz = ivec2(P.screen.zw);
+	ivec2 grid = gisz / au;
+	float scale = P.misc.x;
+	vec2 qf = (vec2(probe) + 0.5) * 0.5 - 0.5;
+	ivec2 q0 = ivec2(floor(qf));
+	vec2 fr = qf - vec2(q0);
+	vec3 acc = vec3(0.0);
+	float wsum = 0.0;
+	for (int k = 0; k < 4; k++) {
+		ivec2 o = ivec2(k & 1, k >> 1);
+		ivec2 qp = q0 + o;
+		if (any(lessThan(qp, ivec2(0))) || any(greaterThanEqual(qp, grid))) {
+			continue;
+		}
+		ivec2 pp = ivec2((vec2(qp) + 0.5) * float(au) * scale);
+		if (any(greaterThanEqual(pp, ivec2(P.screen.xy)))) {
+			continue;
+		}
+		float dd = texelFetch(depth_tex, pp, 0).r;
+		if (dd <= SKY_DEPTH) {
+			continue;
+		}
+		float bw = (o.x == 1 ? fr.x : 1.0 - fr.x) * (o.y == 1 ? fr.y : 1.0 - fr.y);
+		float dz = (lin_depth(dd) - depth0) / (0.1 * depth0 + 0.05);
+		float w = bw * (exp(-dz * dz) + 0.001);
+		vec3 s = vec3(0.0);
+		for (int c = 0; c < 4; c++) {
+			s += imageLoad(upper_img, qp * au + dij * 2 + ivec2(c & 1, c >> 1)).rgb;
+		}
+		acc += w * s * 0.25;
+		wsum += w;
+	}
+	return wsum > 0.0 ? acc / wsum : vec3(0.0);
+}
+
+void main() {
+	ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+	ivec2 gisz = ivec2(P.screen.zw);
+	if (any(greaterThanEqual(g, gisz))) {
+		return;
+	}
+	int an = int(pc.a.y + 0.5);
+	bool top = pc.b.x > 0.5;
+	ivec2 probe = g / an;
+	ivec2 dij = g - probe * an;
+	float scale = P.misc.x;
+	ivec2 ppix = ivec2((vec2(probe) + 0.5) * float(an) * scale);
+	if (any(greaterThanEqual(ppix, ivec2(P.screen.xy)))) {
+		imageStore(out_img, g, vec4(0.0));
+		return;
+	}
+	float d0 = texelFetch(depth_tex, ppix, 0).r;
+	if (d0 <= SKY_DEPTH) {
+		imageStore(out_img, g, vec4(0.0));
+		return;
+	}
+
+	vec3 p0 = view_pos(ppix, d0);
+	float depth0 = -p0.z;
+	vec3 dir = normalize(oct_vec(dij, an));
+	float fp = pixel_footprint(depth0);
+	vec3 a_pt = p0 + dir * (pc.a.z * fp);
+	vec3 b_pt = p0 + dir * (pc.a.w * fp);
+
+	int steps = clamp(int((pc.a.w - pc.a.z) * 0.25), 3, int(pc.b.y));
+	float thick = P.misc.y;
+	float bias = P.misc.z * fp;
+
+	bool hit = false;
+	bool offscreen = false;
+	bool last_sky = false;
+	vec3 hit_rad = vec3(0.0);
+	for (int i = 1; i <= steps; i++) {
+		vec3 s = mix(a_pt, b_pt, float(i) / float(steps));
+		if (s.z > -0.02) {
+			offscreen = true;
+			break;
+		}
+		vec4 c = P.proj * vec4(s, 1.0);
+		vec2 uv = c.xy / c.w * 0.5 + 0.5;
+		if (any(lessThan(uv, vec2(0.0))) || any(greaterThanEqual(uv, vec2(1.0)))) {
+			offscreen = true;
+			break;
+		}
+		ivec2 q = ivec2(uv * P.screen.xy);
+		float d = texelFetch(depth_tex, q, 0).r;
+		last_sky = d <= SKY_DEPTH;
+		if (last_sky) {
+			continue;
+		}
+		float diff = -s.z - lin_depth(d);
+		// A ray can only hit the front of a surface: reject hits on surfaces facing away from it
+		// (this is what stops a ray skimming along its own wall from "hitting" that wall).
+		if (diff > bias && diff < thick && dot(normal_at(q), -dir) > 0.1) {
+			hit = true;
+			hit_rad = min(imageLoad(color_img, q).rgb, vec3(P.tune.z));
+			break;
+		}
+	}
+
+	vec3 result;
+	if (hit) {
+		result = hit_rad;
+	} else if (top) {
+		result = (!offscreen && last_sky) ? P.sky.rgb : vec3(P.sky.a);
+	} else {
+		result = sample_upper(probe, dij, an, depth0);
+	}
+	imageStore(out_img, g, vec4(result, 1.0));
+}

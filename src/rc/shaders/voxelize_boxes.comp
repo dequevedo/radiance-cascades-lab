@@ -1,0 +1,51 @@
+// One thread = one voxel of one moving box's bounds (the box index is a push constant). Writes the FRACTION of the voxel the
+// box really covers (4x4x4 analytic samples against the oriented box), not just "touched or not". The occupancy of a moving
+// box then changes continuously as it moves, instead of a voxel flipping from empty to solid in one frame.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 1, rgba8) uniform restrict image3D vox_albedo;
+layout(set = 0, binding = 5, std430) restrict readonly buffer Boxes {
+	vec4 b[]; // per box: centre, half-extent vector along x, y, z (world, rotation included), albedo.rgb
+} boxes;
+
+layout(push_constant, std430) uniform VB {
+	vec4 a; // box index
+} pc;
+
+void main() {
+	uint i = uint(pc.a.x + 0.5);
+	vec3 c = boxes.b[i * 5u].xyz;
+	vec3 ax = boxes.b[i * 5u + 1u].xyz;
+	vec3 ay = boxes.b[i * 5u + 2u].xyz;
+	vec3 az = boxes.b[i * 5u + 3u].xyz;
+	vec3 alb = boxes.b[i * 5u + 4u].rgb;
+	float vs = P.vol_min.w;
+	ivec3 dims = ivec3(P.vol_dims.xyz);
+	vec3 ext = abs(ax) + abs(ay) + abs(az);
+	ivec3 lo = clamp(ivec3(floor((c - ext - P.vol_min.xyz) / vs)), ivec3(0), dims - 1);
+	ivec3 hi = clamp(ivec3(floor((c + ext - P.vol_min.xyz) / vs)), ivec3(0), dims - 1);
+	ivec3 cell = lo + ivec3(gl_GlobalInvocationID);
+	if (any(greaterThan(cell, hi))) {
+		return;
+	}
+	float iax = 1.0 / dot(ax, ax);
+	float iay = 1.0 / dot(ay, ay);
+	float iaz = 1.0 / dot(az, az);
+	float cov = 0.0;
+	for (int sz = 0; sz < 4; sz++) {
+		for (int sy = 0; sy < 4; sy++) {
+			for (int sx = 0; sx < 4; sx++) {
+				vec3 p = P.vol_min.xyz + (vec3(cell) + (vec3(sx, sy, sz) + 0.5) / 4.0) * vs;
+				vec3 d = p - c;
+				vec3 u = vec3(dot(d, ax) * iax, dot(d, ay) * iay, dot(d, az) * iaz);
+				if (all(lessThanEqual(abs(u), vec3(1.0)))) {
+					cov += 1.0 / 64.0;
+				}
+			}
+		}
+	}
+	if (cov > 0.0 && cov > imageLoad(vox_albedo, cell).a) {
+		imageStore(vox_albedo, cell, vec4(alb, cov));
+	}
+}

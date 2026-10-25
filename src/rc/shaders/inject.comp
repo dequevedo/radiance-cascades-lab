@@ -1,0 +1,153 @@
+// One thread = one voxel: direct light (omni / directional, shadowed through the voxels) on solid voxels.
+// vox_rad = albedo * sum(light * cos * attenuation). Godot's convention: no 1/pi.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 1, rgba8) uniform restrict readonly image3D vox_albedo;
+layout(set = 0, binding = 3, rgba16f) uniform restrict writeonly image3D vox_rad;
+layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
+layout(set = 0, binding = 21, rgba8) uniform restrict readonly image3D vox_dyn; // moving objects: albedo + coverage
+layout(set = 0, binding = 4, std430) restrict readonly buffer Lights {
+	vec4 l[]; // per light: (pos, range), (color*energy, type 0=omni 1=directional), (dir to light, decay)
+} lights;
+
+//#include trace.inc
+
+bool solid2(ivec3 c) {
+	return solid_cell(c) || imageLoad(vox_dyn, c).a > 0.5;
+}
+
+// Fraction of the light that gets through the MOVING objects between t_a and t_b, marching their own trilinear coverage
+// volume: the edge of a shadow cast by an object that moves moves smoothly.
+float soft_march(vec3 o, vec3 l, float t_a, float t_b) {
+	float step_len = P.vol_min.w * 0.75;
+	vec3 extent = P.vol_dims.xyz * P.vol_min.w;
+	float T = 1.0;
+	for (float t = t_a + step_len * 0.5; t < t_b; t += step_len) {
+		vec3 uvw = (o + l * t - P.vol_min.xyz) / extent;
+		if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+			break;
+		}
+		T *= 1.0 - clamp(textureLod(dyn_tex, uvw, 0.0).a * OCC_GAIN, 0.0, 1.0);
+		if (T < 0.01) {
+			return 0.0;
+		}
+	}
+	return T;
+}
+
+// Light that reaches o from direction l over a distance `stop`: the exact voxel walk through the static geometry, times the soft
+// transmittance of the moving objects (only where the ray crosses their bounds). The two layers are independent, so the result
+// is continuous when an object moves: there is no switch between two ways of computing the shadow.
+float shadow(vec3 o, vec3 l, float stop) {
+	ivec3 hc;
+	bool lv;
+	if (dda(o, l, 0.0, stop, hc, lv)) {
+		return 0.0;
+	}
+	if (P.dyn_min.w > 0.5) {
+		vec3 invd = 1.0 / (l + vec3(equal(l, vec3(0.0))) * 1e-8);
+		vec3 ta = (P.dyn_min.xyz - o) * invd;
+		vec3 tb = (P.dyn_max.xyz - o) * invd;
+		vec3 tlo = min(ta, tb);
+		vec3 thi = max(ta, tb);
+		float t_in = max(max(max(tlo.x, tlo.y), tlo.z), 0.0);
+		float t_out = min(min(min(thi.x, thi.y), thi.z), stop);
+		if (t_in < t_out) {
+			return soft_march(o, l, t_in, t_out);
+		}
+	}
+	return 1.0;
+}
+
+void main() {
+	ivec3 c = ivec3(gl_GlobalInvocationID);
+	if (!in_vol(c)) {
+		return;
+	}
+	vec4 sa = imageLoad(vox_albedo, c);
+	vec4 da = imageLoad(vox_dyn, c);
+	vec4 alb = da.a > sa.a ? da : sa;
+	if (alb.a < 0.02) { // partly covered voxels (the edge of a moving box) carry light too
+		imageStore(vox_rad, c, vec4(0.0));
+		return;
+	}
+	bool near_empty = false;
+	for (int k = 0; k < 27 && !near_empty; k++) {
+		ivec3 nc = c + ivec3(k % 3 - 1, (k / 3) % 3 - 1, k / 9 - 1);
+		near_empty = !in_vol(nc) || !solid2(nc);
+	}
+	if (!near_empty) {
+		imageStore(vox_rad, c, vec4(0.0));
+		return;
+	}
+	// Surface normal = direction towards the empty neighbours, radius 2, closer ones count more
+	// (a wider kernel keeps the voxel staircase of a curved wall from turning into a noisy normal).
+	vec3 n = vec3(0.0);
+	bool any_empty = false;
+	for (int dz = -2; dz <= 2; dz++) {
+		for (int dy = -2; dy <= 2; dy++) {
+			for (int dx = -2; dx <= 2; dx++) {
+				if (dx == 0 && dy == 0 && dz == 0) {
+					continue;
+				}
+				ivec3 nc = c + ivec3(dx, dy, dz);
+				if (!in_vol(nc) || !solid2(nc)) {
+					vec3 o = vec3(dx, dy, dz);
+					n += o / (1.0 + dot(o, o));
+					if (abs(dx) <= 1 && abs(dy) <= 1 && abs(dz) <= 1) {
+						any_empty = true;
+					}
+				}
+			}
+		}
+	}
+	if (!any_empty || dot(n, n) < 1e-6) {
+		imageStore(vox_rad, c, vec4(0.0));
+		return;
+	}
+	n = normalize(n);
+	float vs = P.vol_min.w;
+	vec3 center = P.vol_min.xyz + (vec3(c) + 0.5) * vs;
+	vec3 pos = center + n * vs * 1.0;
+	// Shadow rays start well off the surface: on a voxelized curved wall they would otherwise graze the
+	// neighbouring steps and shadow voxels that are really lit (shadow acne, which shows up as stripes).
+	vec3 spos = center + n * vs * 2.4;
+	vec3 direct = vec3(0.0);
+	int count = int(P.vol_dims.w);
+	for (int i = 0; i < count; i++) {
+		vec4 a = lights.l[i * 3];
+		vec4 b = lights.l[i * 3 + 1];
+		vec4 d = lights.l[i * 3 + 2];
+		vec3 l;
+		float dist;
+		float atten = 1.0;
+		if (b.w < 0.5) {
+			vec3 to = a.xyz - pos;
+			dist = length(to);
+			if (dist > a.w || dist < 1e-3) {
+				continue;
+			}
+			l = to / dist;
+			float nd = dist / a.w;
+			nd *= nd;
+			nd *= nd;
+			nd = max(1.0 - nd, 0.0);
+			atten = nd * nd * pow(max(dist, 1e-4), -d.w);
+		} else {
+			l = normalize(d.xyz);
+			dist = 80.0;
+		}
+		float cosv = max(dot(n, l), 0.0);
+		if (cosv <= 0.0) {
+			continue;
+		}
+		float stop = b.w < 0.5 ? max(dist - 0.5, 0.0) : dist;
+		float lit = shadow(spos, l, stop);
+		if (lit <= 0.0) {
+			continue;
+		}
+		direct += b.rgb * (cosv * atten * lit);
+	}
+	imageStore(vox_rad, c, vec4(alb.rgb * direct, 1.0));
+}

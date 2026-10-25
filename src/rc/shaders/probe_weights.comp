@@ -1,0 +1,70 @@
+// One thread = one probe of cascade n. Weights of its 8 neighbours in cascade n + 1, once per probe (all its rays share them):
+// trilinear weight x how open the neighbour is (1 - occupancy) x how much of the straight path to it is free (soft march
+// through the trilinear occupancy). Everything is continuous, so a probe that a moving object covers fades out instead of
+// switching off, and nothing pops as the object passes.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
+layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
+layout(set = 0, binding = 19, rgba16f) uniform restrict writeonly image3D pw_lo; // weights of neighbours 0..3
+layout(set = 0, binding = 20, rgba16f) uniform restrict writeonly image3D pw_hi; // weights of neighbours 4..7
+
+layout(push_constant, std430) uniform PW {
+	vec4 a; // probe spacing of this cascade (m), unused x3
+} pc;
+
+float occupancy_at(vec3 w) {
+	vec3 uvw = (w - P.vol_min.xyz) / (P.vol_dims.xyz * P.vol_min.w);
+	if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+		return 0.0;
+	}
+	return clamp(max(textureLod(occ_tex, uvw, 0.0).a, textureLod(dyn_tex, uvw, 0.0).a), 0.0, 1.0);
+}
+
+float transmittance(vec3 a, vec3 b) {
+	vec3 d = b - a;
+	float len = length(d);
+	if (len < 1e-3) {
+		return 1.0;
+	}
+	d /= len;
+	float step_len = P.vol_min.w;
+	float T = 1.0;
+	for (float t = step_len * 0.5; t < len - step_len * 0.25; t += step_len) {
+		T *= 1.0 - clamp(occupancy_at(a + d * t) * OCC_GAIN, 0.0, 1.0);
+		if (T < 0.01) {
+			return 0.0;
+		}
+	}
+	return T;
+}
+
+void main() {
+	ivec3 g = ivec3(gl_GlobalInvocationID);
+	float spacing = pc.a.x;
+	ivec3 grid = grid_of(spacing);
+	if (any(greaterThanEqual(g, grid))) {
+		return;
+	}
+	float su = spacing * 2.0;
+	ivec3 gridu = grid_of(su);
+	vec3 ppos = P.vol_min.xyz + (vec3(g) + 0.5) * spacing;
+	vec3 qf = (ppos - P.vol_min.xyz) / su - 0.5;
+	ivec3 q0 = ivec3(floor(qf));
+	vec3 fr = qf - vec3(q0);
+	float w[8];
+	for (int k = 0; k < 8; k++) {
+		ivec3 o = ivec3(k & 1, (k >> 1) & 1, k >> 2);
+		ivec3 qp = q0 + o;
+		w[k] = 0.0;
+		if (any(lessThan(qp, ivec3(0))) || any(greaterThanEqual(qp, gridu))) {
+			continue;
+		}
+		vec3 qpos = P.vol_min.xyz + (vec3(qp) + 0.5) * su;
+		float bw = (o.x == 1 ? fr.x : 1.0 - fr.x) * (o.y == 1 ? fr.y : 1.0 - fr.y) * (o.z == 1 ? fr.z : 1.0 - fr.z);
+		w[k] = bw * (1.0 - occupancy_at(qpos)) * transmittance(ppos, qpos);
+	}
+	imageStore(pw_lo, g, vec4(w[0], w[1], w[2], w[3]));
+	imageStore(pw_hi, g, vec4(w[4], w[5], w[6], w[7]));
+}

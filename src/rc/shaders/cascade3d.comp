@@ -1,0 +1,96 @@
+// One thread = one ray of one world-space probe of cascade n. The ray is marched through the voxels as a soft density
+// field (trilinear occupancy, front to back), not as "first solid voxel": a ray that a moving object starts to block is
+// blocked gradually over about a voxel of movement instead of switching on in one frame (with only 16 directions per
+// probe, one ray is a big slice of the probe's light). What the ray does not absorb continues into the 8 nearest probes
+// of cascade n + 1 (soft weights from probe_weights.comp) or, at the top cascade, into the sky.
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 1, rgba8) uniform restrict readonly image3D vox_albedo;
+layout(set = 0, binding = 3, rgba16f) uniform restrict readonly image3D vox_rad;
+layout(set = 0, binding = 6, rgba16f) uniform restrict readonly image3D upper_img;
+layout(set = 0, binding = 7, rgba16f) uniform restrict writeonly image3D out_img;
+layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
+layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
+layout(set = 0, binding = 15) uniform sampler3D rad_tex; // vox_rad, trilinear: rgb premultiplied by alpha (= surface voxel weight)
+layout(set = 0, binding = 19, rgba16f) uniform restrict readonly image3D pw_lo;
+layout(set = 0, binding = 20, rgba16f) uniform restrict readonly image3D pw_hi;
+
+layout(push_constant, std430) uniform Cascade {
+	vec4 a; // index, directions per axis (a_n), probe spacing (m), is top cascade
+	vec4 b; // interval start (m), interval end (m), unused, unused
+} pc;
+
+//#include trace.inc
+
+vec3 sample_upper(ivec3 probe, ivec2 dij, int an, float spacing) {
+	float su = spacing * 2.0;
+	int au = an * 2;
+	vec3 ppos = P.vol_min.xyz + (vec3(probe) + 0.5) * spacing;
+	ivec3 q0 = ivec3(floor((ppos - P.vol_min.xyz) / su - 0.5));
+	vec4 wa = imageLoad(pw_lo, probe);
+	vec4 wb = imageLoad(pw_hi, probe);
+	float wk[8] = float[8](wa.x, wa.y, wa.z, wa.w, wb.x, wb.y, wb.z, wb.w);
+	vec3 acc = vec3(0.0);
+	float wsum = 0.0;
+	for (int k = 0; k < 8; k++) {
+		if (wk[k] <= 1e-5) {
+			continue;
+		}
+		ivec3 qp = q0 + ivec3(k & 1, (k >> 1) & 1, k >> 2);
+		vec3 s = vec3(0.0);
+		for (int c = 0; c < 4; c++) {
+			s += imageLoad(upper_img, ivec3(qp.x * au + dij.x * 2 + (c & 1), qp.y * au + dij.y * 2 + (c >> 1), qp.z)).rgb;
+		}
+		acc += wk[k] * s * 0.25;
+		wsum += wk[k];
+	}
+	return wsum > 1e-4 ? acc / wsum : vec3(0.0);
+}
+
+void main() {
+	ivec3 g = ivec3(gl_GlobalInvocationID);
+	int an = int(pc.a.y + 0.5);
+	float spacing = pc.a.z;
+	bool top = pc.a.w > 0.5;
+	ivec3 grid = grid_of(spacing);
+	if (any(greaterThanEqual(g, ivec3(grid.x * an, grid.y * an, grid.z)))) {
+		return;
+	}
+	ivec3 probe = ivec3(g.x / an, g.y / an, g.z);
+	ivec2 dij = ivec2(g.x - probe.x * an, g.y - probe.y * an);
+	vec3 ppos = P.vol_min.xyz + (vec3(probe) + 0.5) * spacing;
+	if (solid_at(ppos)) {
+		imageStore(out_img, g, vec4(0.0));
+		return;
+	}
+	vec3 dir = normalize(oct_vec(dij, an));
+	float len = pc.b.y - pc.b.x;
+	float want = P.vol_min.w * 0.75;
+	int steps = max(1, int(ceil(len / want)));
+	float st = len / float(steps);
+	vec3 extent = P.vol_dims.xyz * P.vol_min.w;
+	vec3 L = vec3(0.0);
+	float T = 1.0;
+	for (int i = 0; i < steps && T > 0.02; i++) {
+		vec3 pos = ppos + dir * (pc.b.x + (float(i) + 0.5) * st);
+		vec3 uvw = (pos - P.vol_min.xyz) / extent;
+		if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+			break;
+		}
+		float occ = max(textureLod(occ_tex, uvw, 0.0).a, textureLod(dyn_tex, uvw, 0.0).a);
+		if (occ > 0.01) {
+			vec4 r = textureLod(rad_tex, uvw, 0.0);
+			vec3 surf = r.a > 0.01 ? r.rgb / r.a : vec3(0.0);
+			float a = clamp(occ * OCC_GAIN, 0.0, 1.0);
+			L += T * a * min(surf, vec3(P.tune.z));
+			T *= 1.0 - a;
+		}
+	}
+	vec3 rest = vec3(0.0);
+	if (T > 0.02) {
+		rest = top ? P.sky.rgb : sample_upper(probe, dij, an, spacing);
+	}
+	vec3 result = L + T * rest;
+	imageStore(out_img, g, vec4(result, 1.0));
+}

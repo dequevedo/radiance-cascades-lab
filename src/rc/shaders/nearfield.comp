@@ -1,0 +1,105 @@
+// Per pixel, one short ray (up to the near range) in the direction given by the pixel's place in a 4x4 tile.
+// The ray is marched through the voxels as a soft density field (trilinear occupancy, front-to-back), not as
+// "first solid voxel": the edge of a voxel step becomes a one-voxel ramp, so the staircase of a curved wall or
+// of a moving box does not show up as a zigzag in the light. What the ray does not absorb is the same direction
+// read from the nearest world probes, whose rays start where this one ends. Also stores the world normal
+// and linear depth.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, rgba8) uniform restrict readonly image3D vox_albedo;
+layout(set = 0, binding = 8) uniform sampler2D depth_tex;
+layout(set = 0, binding = 10, rgba16f) uniform restrict readonly image3D c0_img;
+layout(set = 0, binding = 12, rgba16f) uniform restrict writeonly image2D near_img;
+layout(set = 0, binding = 13, rgba16f) uniform restrict writeonly image2D nrm_img;
+layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
+layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
+layout(set = 0, binding = 15) uniform sampler3D rad_tex; // vox_rad, trilinear: rgb premultiplied by alpha (= surface voxel weight)
+
+layout(push_constant, std430) uniform Near {
+	vec4 a; // a_0 (directions per axis of cascade 0), directions per axis of the per-pixel tile, tile shift x, tile shift y
+} pc;
+
+//#include trace.inc
+//#include screen.inc
+
+// The same direction (ij) of cascade 0, blended over the 8 probes around the point (sharp facing weight, no ray test).
+vec3 probe_blend(vec3 pw, vec3 nw, ivec2 ij, int a0) {
+	float sp = P.misc.x;
+	ivec3 grid = grid_of(sp);
+	vec3 start = pw + nw * P.misc.z;
+	vec3 qf = (start - P.vol_min.xyz) / sp - 0.5;
+	ivec3 q0 = ivec3(floor(qf));
+	vec3 fr = qf - vec3(q0);
+	vec3 acc = vec3(0.0);
+	float ws = 0.0;
+	for (int k = 0; k < 8; k++) {
+		ivec3 o = ivec3(k & 1, (k >> 1) & 1, k >> 2);
+		ivec3 qp = q0 + o;
+		if (any(lessThan(qp, ivec3(0))) || any(greaterThanEqual(qp, grid))) {
+			continue;
+		}
+		vec3 qpos = P.vol_min.xyz + (vec3(qp) + 0.5) * sp;
+		// How open the probe is, as a smooth number: a moving object covering it fades it out instead of switching it off.
+		vec3 quvw = (qpos - P.vol_min.xyz) / (P.vol_dims.xyz * P.vol_min.w);
+		float open = 1.0 - clamp(max(textureLod(occ_tex, quvw, 0.0).a, textureLod(dyn_tex, quvw, 0.0).a), 0.0, 1.0);
+		float bw = (o.x == 1 ? fr.x : 1.0 - fr.x) * (o.y == 1 ? fr.y : 1.0 - fr.y) * (o.z == 1 ? fr.z : 1.0 - fr.z);
+		float face = dot(normalize(qpos - pw), nw);
+		float w = bw * open * (pow((face + 1.0) * 0.5, 4.0) + 0.01);
+		acc += w * imageLoad(c0_img, ivec3(qp.x * a0 + ij.x, qp.y * a0 + ij.y, qp.z)).rgb;
+		ws += w;
+	}
+	return ws > 0.0 ? acc / ws : vec3(0.0);
+}
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(p, ivec2(P.screen.xy)))) {
+		return;
+	}
+	float d = texelFetch(depth_tex, p, 0).r;
+	if (d <= SKY_DEPTH) {
+		imageStore(near_img, p, vec4(0.0));
+		imageStore(nrm_img, p, vec4(0.0));
+		return;
+	}
+	vec3 vpos = view_pos(p, d);
+	vec3 pw = (P.cam_to_world * vec4(vpos, 1.0)).xyz;
+	vec3 nw = normalize(mat3(P.cam_to_world) * normal_view(p, vpos));
+	imageStore(nrm_img, p, vec4(nw, -vpos.z));
+
+	int a0 = int(pc.a.x + 0.5);
+	int na = int(pc.a.y + 0.5);
+	ivec2 shift = ivec2(int(pc.a.z + 0.5), int(pc.a.w + 0.5)); // changes every frame, so a pixel sees other directions next time
+	vec3 dir = normalize(oct_vec(ivec2((p.x + shift.x) % na, (p.y + shift.y) % na), na));
+	ivec2 ij = oct_texel(dir, a0); // the same direction in the probes (coarser grid)
+	vec3 rad = vec3(0.0);
+	// Directions at or below the surface get no weight in the gather, so they are not traced.
+	if (dot(dir, nw) > 0.15) {
+		float vs = P.vol_min.w;
+		vec3 o = pw + nw * vs * 1.6;
+		const int STEPS = 14;
+		float step_len = P.extra.x / float(STEPS);
+		vec3 extent = P.vol_dims.xyz * vs;
+		float T = 1.0;
+		for (int i = 0; i < STEPS && T > 0.02; i++) {
+			vec3 pos = o + dir * ((float(i) + 0.5) * step_len);
+			vec3 uvw = (pos - P.vol_min.xyz) / extent;
+			if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+				break;
+			}
+			float occ = max(textureLod(occ_tex, uvw, 0.0).a, textureLod(dyn_tex, uvw, 0.0).a);
+			if (occ > 0.01) {
+				vec4 r = textureLod(rad_tex, uvw, 0.0);
+				vec3 surf = r.a > 0.01 ? r.rgb / r.a : vec3(0.0);
+				float a = clamp(occ * OCC_GAIN, 0.0, 1.0);
+				rad += T * a * min(surf, vec3(P.tune.z));
+				T *= 1.0 - a;
+			}
+		}
+		if (T > 0.02) {
+			rad += T * probe_blend(pw, nw, ij, a0);
+		}
+	}
+	imageStore(near_img, p, vec4(rad, 1.0));
+}
