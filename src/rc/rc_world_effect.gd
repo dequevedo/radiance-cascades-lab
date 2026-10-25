@@ -98,6 +98,7 @@ var rays_per_frame := 0
 var _near_tex := RID()
 var _nrm: Array[RID] = [RID(), RID()]
 var _hist: Array[RID] = [RID(), RID()]
+var _spec_hist: Array[RID] = [RID(), RID()] # the reflections blended in time
 var _dir: Array[RID] = [RID(), RID()] # per pixel: where the bounce light comes from (brightness-weighted mean direction)
 var _pp := 0
 var _frame := 0
@@ -606,7 +607,7 @@ func free_resources() -> void:
 	gi_enabled = false
 	volume_ready = false
 	_free_volume()
-	for r in _pipe.values() + _shader.values() + [_sampler, _sampler_lin, _ubo, _near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _prev_color, _dir[0], _dir[1]]:
+	for r in _pipe.values() + _shader.values() + [_sampler, _sampler_lin, _ubo, _near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _prev_color, _dir[0], _dir[1], _spec_hist[0], _spec_hist[1]]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_prev_color = RID()
@@ -1056,6 +1057,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		var final_set := UniformSetCacheRD.get_cache(_shader["final"], 0,
 			[_ubo_u(), color_u, albedo_u, depth_u, _img(12, _near_tex), _img(13, _nrm[cur]), _img(16, _nrm[1 - cur]),
 			 _img(17, _hist[1 - cur]), _img(18, _hist[cur]), _img(20, _spec_tex), _img(21, _dir[1 - cur]), _img(22, _dir[cur]),
+			 _img(26, _spec_hist[1 - cur]), _img(27, _spec_hist[cur]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler, nr_tex if nr_tex.is_valid() else buffers.get_depth_layer(0)])])
 		var fpc := npc.duplicate()
 		fpc.append_array([0.0, spec_strength, 0.0, 0.0])
@@ -1068,6 +1070,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			var filt_set := UniformSetCacheRD.get_cache(_shader["final"], 0,
 				[_ubo_u(), color_u, albedo_u, depth_u, _img(12, _near_tex), _img(13, _nrm[cur]), _img(16, _nrm[1 - cur]),
 				 _img(17, _hist[cur]), _img(18, _hist[1 - cur]), _img(20, _spec_tex), _img(21, _dir[cur]), _img(22, _dir[1 - cur]),
+				 _img(26, _spec_hist[cur]), _img(27, _spec_hist[1 - cur]),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler, nr_tex if nr_tex.is_valid() else buffers.get_depth_layer(0)])])
 			fpc[4] = 1.0
 			rd.compute_list_bind_uniform_set(cl, filt_set, 0)
@@ -1113,7 +1116,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 func _ensure_screen_textures(size: Vector2i) -> void:
 	if size == _screen_tex_size and _near_tex.is_valid():
 		return
-	for r in [_near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _dir[0], _dir[1]]:
+	for r in [_near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _dir[0], _dir[1], _spec_hist[0], _spec_hist[1]]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	var f := RDTextureFormat.new()
@@ -1127,6 +1130,8 @@ func _ensure_screen_textures(size: Vector2i) -> void:
 		_nrm[i] = rd.texture_create(f, RDTextureView.new(), [])
 		_hist[i] = rd.texture_create(f, RDTextureView.new(), [])
 		_dir[i] = rd.texture_create(f, RDTextureView.new(), [])
+		_spec_hist[i] = rd.texture_create(f, RDTextureView.new(), [])
+		rd.texture_clear(_spec_hist[i], Color(0, 0, 0, 0), 0, 1, 0, 1)
 		rd.texture_clear(_dir[i], Color(0, 0, 0, 0), 0, 1, 0, 1)
 		rd.texture_clear(_nrm[i], Color(0, 0, 0, 0), 0, 1, 0, 1)
 		rd.texture_clear(_hist[i], Color(0, 0, 0, 0), 0, 1, 0, 1)

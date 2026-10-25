@@ -574,6 +574,9 @@ func _flicker(report: PackedStringArray) -> void:
 		"spheres": [Vector3(-11.3, 1.3, -3.25), Vector3(-11.3, 0.75, -4.1)],
 		"relief": [Vector3(-14.2, 1.5, -3.7), Vector3(-17.6, 1.1, -4.75)],
 	}
+	if city_mode:
+		# Reflections in the wet street: the puddles at a crossing and the avenue.
+		views = {"puddles": poses["crossing"], "avenue": poses["avenue"]}
 	var base_aa := aa_mode # the reference "godot" frames use the same anti-aliasing as the run (--aa=...)
 	var base := {"jitter": effect_world.jitter, "edge_fix": effect_world.edge_fix, "denoise": effect_world.denoise,
 		"far_every": effect_world.far_every, "temporal_adaptive": effect_world.temporal_adaptive, "temporal_alpha": effect_world.temporal_alpha,

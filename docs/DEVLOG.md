@@ -1028,3 +1028,24 @@ of 255 in the store's views; the rooms without vertex colours did not change).
 Cost (1920x1080, the machine busy): near-field pass, rooms 0.27 -> 0.35 ms, city 0.29 -> 0.97 ms (most of it is the picture
 reflection on the damp asphalt, which is the wet look). Shimmer with the camera moving close to the spheres: 6.2 % -> 7.2 % of the
 pixels; the other views unchanged within noise. The GI tab has a Reflections section to switch each part off.
+
+
+---
+
+# Step 23: sparkles in the reflections when the camera moves
+
+The reflections of step 22 are jittered every frame (a new direction in the roughness cone, a new start for the picture
+reflection) and nothing of ours averaged them: only Godot's TAA did, which keeps little history while the camera moves. The
+wet street sparkled while moving and calmed down when the camera stopped.
+
+The final pass now treats the reflection like the bounce light: it is reprojected and blended with the previous frames (its own
+history pair), with two guards: a pixel can be no brighter than the brightest of its eight neighbours (a single ray that hit a
+lamp), and the history is clamped to the range of the current neighbours (a reflection that moved leaves no ghost).
+
+| `--city --flicker`, pixels changing by more than 3 levels | still | moving | spikes (p99.5) |
+|---|---|---|---|
+| puddles, before | 0.70 % | 4.37 % | 18 |
+| puddles, after | 0.29 % | 2.99 % | 12 |
+| puddles, Godot alone (reference) | 0.25 % | 3.00 % | 18 |
+
+What is left while moving is mostly real: a reflection moves over the ground when the camera does. Cost: within noise.
