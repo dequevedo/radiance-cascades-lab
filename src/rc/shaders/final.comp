@@ -136,5 +136,9 @@ void main() {
 	} else {
 		col.rgb += indirect;
 	}
+	// Split view: left of the line, the image as Godot drew it (no bounce light).
+	if (P.screen.z > 0.0 && float(p.x) < P.screen.z * P.screen.x) {
+		col = imageLoad(color_img, p);
+	}
 	imageStore(color_img, p, col);
 }

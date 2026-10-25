@@ -583,3 +583,59 @@ That is physically right for a 1-bounce-ish solution with a clamp: the light tha
 - The heat map is a debug view of the indirect light only (not the final picture).
 - The corridor walls are thin meshes with a second face 0.25 m behind, so they are solid for the voxels. Light does not leak through them (the outer side stays dark in the heat map).
 - Changing voxel size / probes / cascades re-voxelizes 250 k triangles and takes some seconds; the panel shows a "Rebuilding..." status while it does.
+
+
+---
+
+# Step 6: cheaper frames, an object picker, split view, a compact panel
+
+Goals: make the per-frame work cheaper, move props with the mouse, compare with and without the effect side by side, and fit the
+panel in less space.
+
+## Static voxelization on the GPU
+
+`collect_triangles` unpacked every triangle in GDScript into a float array before the GPU saw it. `collect_meshes` now hands the
+GPU the meshes' own arrays: world-space vertices (one native multiply per surface), indices, and one record per surface;
+`voxelize_mesh.comp` runs one thread per triangle of each surface. A surface's local arrays are cached the first time they are
+read, because reading a primitive mesh (`BoxMesh`) builds its arrays on every call.
+
+| | CPU triangles (before) | GPU meshes |
+|---|---|---|
+| Shop + `--dense` (431,452 triangles): gathering at start-up | 234 ms | 103 ms |
+| Voxelize + light the volume | 14.4 ms | 7.1 ms |
+| Gathering again after a prop moved (cache warm) | | 1.7 ms median, 2.4 ms max over 10 drags |
+
+The second row is what makes dragging a prop with live bounce light possible.
+
+## Re-lighting only what changed
+
+The injection pass lit every voxel every frame. It now compares the light list and the moving boxes with the previous frame and
+lights again only the union of: the reach of every light that changed (old and new position), the old and new bounds of the
+moving objects, and the reach of every light that touches them (their shadows move inside it). Three voxels of margin cover the
+normal estimate, which looks two voxels around. A directional light that changed, or that reaches a moving object, means the
+whole volume.
+
+| `--bench`, shop | before | after |
+|---|---|---|
+| Nothing moving (`--still`) | 0.282 ms | 0.005 ms |
+| Dolly rolling, one light flickering | 0.294 ms | 0.332 ms |
+
+When things move the region is almost the whole store (the flickering light reaches 9 m, the dolly lamp too), so there is no gain
+there; the Stats tab shows the share re-lit each frame.
+
+## Far cascades every other frame
+
+Cascades from `far_from` (2) up are traced every `far_every` (2) frames; their merged result is copied into `_probe_keep` and the
+nearer cascades merge with that copy on the frames in between. Cascades pass: 0.659 -> 0.527 ms still, 0.738 -> 0.673 ms with the
+dolly rolling. The cost: light that reaches far changes up to one frame late.
+
+## Panel, picker, split view
+
+- The panel is now tabs (View, GI, Quality, Scene, Object, Stats), one line per slider.
+- `src/object_picker.gd`: hover highlight (yellow overlay), click to select (blue overlay + a three-arrow gizmo drawn on top),
+  drag an arrow to move along that axis (the mouse motion projected on the arrow as it appears on screen), rotation and colour in
+  the Object tab, "Reset object". While dragging, the static scene is voxelized again every 0.1 s and once more on release.
+- Split view: the final pass leaves the pixels left of a line as Godot drew them (`split`, sent in `screen.z`).
+- Stats: GPU time per pass (averaged), the share of the volume re-lit, whether the far cascades were traced this frame.
+
+Not tested with a real mouse: the picker and the split line were driven by the test harness (`--uitest`) in a hidden window.

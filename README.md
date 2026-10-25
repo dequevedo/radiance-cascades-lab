@@ -26,6 +26,14 @@ The world-space version is the main one. Per frame it:
 
 Moving objects are drawn as boxes into their own volume each frame, and lights can move, change colour or flicker.
 
+Three things keep the per-frame cost down:
+
+- **Static geometry is voxelized on the GPU** straight from the meshes' vertex and index arrays, so a prop can be moved and the
+  scene voxelized again while it is dragged.
+- **Only what changed is lit again**: the direct light is injected only around lights that changed and around moving objects.
+  When nothing moves, that pass costs nothing.
+- **The far cascades are traced every other frame** and reused in between: far light changes slowly.
+
 ## Scenes
 
 | Scene | What it tests |
@@ -64,10 +72,20 @@ Or, with `GODOT` set to your Godot executable (or `godot` on the `PATH`):
 | G / T | per-pixel near field on/off, temporal smoothing on/off |
 | Space | pause the moving objects (Z / X move the dolly by hand when "Dolly rolls" is off in the panel) |
 
-![The control panel: presets, view modes, places to jump to, live settings and a reset](docs/readme/control_panel.jpg)
+![The control panel and the object picker](docs/readme/control_panel.jpg)
 
-The panel has quality presets (Low, Default, High), every live setting of the effect, the lights of the scene, and
-**Reset all to defaults**.
+The panel is split in tabs: **View** (view modes, split view, places to jump to), **GI** (every live setting of the effect and
+the performance switches), **Quality** (presets and volume sizes), **Scene** (the lights), **Object** (the selected prop) and
+**Stats** (GPU time of every pass), plus **Reset all**.
+
+In the shop, with the mouse free, hover a prop to highlight it and click it to select it; drag an arrow of the gizmo to move it
+(Esc deselects). The bounce light follows, because the scene is voxelized again on the GPU while the prop moves.
+
+![Moving a prop: the bounce light before and after](docs/readme/object_picker.jpg)
+
+**Split view** shows Godot alone on the left of a line and the effect on the right; drag the line.
+
+![Split view and the Stats tab](docs/readme/split_stats.jpg)
 
 ## Test harness
 
@@ -82,7 +100,11 @@ Run with a flag after `--` and the lab writes images and numbers to `out/` (git-
 | `--lag` | tunnel | how far the temporal blend trails behind a moving shadow |
 | `--leak` | tunnel | light on the outer face of a wall that should be dark |
 | `--motionmaps` | tunnel | difference images of two frames a few centimetres apart |
-| `--uitest` | shop | drives the control panel (views, presets, reset) and checks the values come back |
+| `--uitest` | shop | drives the control panel (views, object picker, split view, presets, reset) and checks the values come back |
+
+Switches for A/B measurements: `--cpu-voxelize` (pack the triangles on the CPU, as before), `--inject-full` (light the whole
+volume every frame), `--far-every=1` (trace every cascade every frame), `--still` (nothing moves, no light changes) and
+`--dense` (about 400,000 extra triangles in the shop).
 
 ## Results on one machine
 
@@ -100,13 +122,25 @@ RX 9070 XT, 1920x1080, everything dynamic (voxels of moving objects and lights r
 Flicker around a moving object, as the mean / max frame-to-frame jump at 20 floor points (x1000, signal about 780):
 0.70 / 7.5 with temporal smoothing, 3.4 / 30 without. Light through a wall on the far side: 0.0.
 
+What the three optimizations saved (same machine, 1920x1080, shop, `--bench`; old = `--cpu-voxelize --inject-full --far-every=1`):
+
+| | old | new |
+|---|---|---|
+| Nothing moving: re-lighting the volume | 0.282 ms | 0.005 ms |
+| Nothing moving: cascades | 0.659 ms | 0.527 ms |
+| Nothing moving: whole frame | 2.86 ms (350 FPS) | 2.47 ms (406 FPS) |
+| Dolly rolling and a light flickering: re-lighting | 0.294 ms | 0.332 ms (they touch almost the whole store) |
+| Dolly rolling: cascades | 0.738 ms | 0.673 ms |
+| 431,000 triangles: gathering the scene at start-up | 234 ms | 103 ms |
+| Gathering it again while a prop is dragged | | 1.7 ms |
+
 These numbers come from a fast desktop GPU with other programs running; treat them as orders of magnitude.
 
 ## Limits
 
 - **One volume, fixed in place.** The voxel volume does not follow the camera, so large open worlds are out of scope.
 - **Moving objects are boxes.** Characters, doors or anything that is not box-shaped would need a proper voxelizer.
-- **Static geometry is voxelized once at start-up**, on the CPU in GDScript (a few seconds for ~250k triangles).
+- **Moving a static prop re-voxelizes the whole scene** (cheap here, ~2 ms of CPU, but it grows with the scene).
 - **One bounce**, a soft and slightly blurry result in tight corners, and up to 16 lights per frame.
 - The screen-space version cannot see anything off screen, by construction.
 
@@ -117,6 +151,7 @@ project.godot, main.tscn   Godot project (main.tscn runs src/main.gd)
 src/main.gd                scenes, camera, interactive mode and the test harness
 src/shop_scene.gd          the store and the curved corridor (box props in KIT)
 src/ui_panel.gd            the control panel
+src/object_picker.gd       hover, select and move props (shop)
 src/rc/rc_effect.gd        screen-space radiance cascades
 src/rc/rc_world_effect.gd  world-space radiance cascades
 src/rc/shaders/            compute shaders (.comp) and their includes (.inc)

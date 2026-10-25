@@ -12,6 +12,7 @@ const RC := preload("res://src/rc/rc_effect.gd")
 const RCW := preload("res://src/rc/rc_world_effect.gd")
 const SHOP := preload("res://src/shop_scene.gd")
 const UI := preload("res://src/ui_panel.gd")
+const PICKER := preload("res://src/object_picker.gd")
 
 const LAMP_COLOR := Color(1.0, 0.62, 0.28)
 const CART_LAMP_COLOR := Color(1.0, 0.85, 0.6)
@@ -55,6 +56,8 @@ var view_gain := 10.0 # brightness boost of the bounce-only views
 var sun_value := 0.0
 var live_mode := "world"
 var ui
+var picker # the object picker (shop only)
+var collect_ms := 0.0
 var _ui_sticky := false
 var hidden_run := OS.get_environment("RC_LAB_NO_MOUSE_CAPTURE") == "1" # automated runs in a hidden window must never capture or clip the real mouse
 var _box_nodes := []
@@ -228,6 +231,21 @@ func _build_street() -> void:
 func _build_shop() -> void:
 	shop = SHOP.new()
 	shop.build(self)
+	# --dense: about 400,000 extra triangles of spheres on the shelves' tops, to measure the voxelizer on a heavy scene.
+	if user_args.has("--dense"):
+		var sm := SphereMesh.new()
+		sm.radius = 0.12
+		sm.height = 0.24
+		sm.radial_segments = 64
+		sm.rings = 32
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = Color(0.7, 0.5, 0.4)
+		for i in 100:
+			var mi := MeshInstance3D.new()
+			mi.mesh = sm
+			mi.material_override = mat
+			mi.position = Vector3(-6.0 + (i % 20) * 0.6, 2.2 + (i / 20) * 0.2, -4.4 + (i % 7) * 0.05)
+			static_root.add_child(mi)
 	poses = shop.poses
 	lamp_s = 4.0
 	_animate(0.0)
@@ -678,6 +696,45 @@ func _ui_test(report: PackedStringArray) -> void:
 	var defaults := "voxel %.4f, probes %.2f, cascades %d, near dirs %d, alpha %.2f, strength %.2f" % [
 		effect_world.voxel_size, effect_world.probe_spacing, effect_world.cascades, effect_world.near_dirs, effect_world.temporal_alpha, gi_strength]
 	report.append("defaults:      " + defaults)
+	# The object picker: select the counter, move it, see the bounce follow, put it back.
+	teleport("counter")
+	var target: Node3D = null
+	for n in shop.selectables:
+		if String(n.name) == "FormicaCounter":
+			target = n
+			break
+	picker.set_hovered(shop.selectables[shop.selectables.size() - 1])
+	picker.select(target)
+	ui.tabs.current_tab = ui.tabs.get_tab_idx_from_control(ui.tabs.get_node("Object"))
+	await _frames(30)
+	await _shot("ui_object_selected.png")
+	set_live_mode("world_gi")
+	await _frames(30)
+	await _shot("ui_object_before_gi.png")
+	picker.move_selected(Vector3(-1.6, 0.0, 1.4))
+	picker.revoxelize()
+	await _frames(40)
+	await _shot("ui_object_moved_gi.png")
+	report.append("picker: moved %s, re-voxelized %d times, last mesh gather %.1f ms" % [target.name, picker.revoxelize_count, picker.last_collect_ms])
+	var gathers := PackedFloat32Array()
+	for i in 10:
+		picker.move_selected(Vector3(0.05, 0.0, 0.0))
+		picker.revoxelize()
+		gathers.append(picker.last_collect_ms)
+		await _frames(1)
+	gathers.sort()
+	report.append("picker: 10 drags, mesh gather median %.1f ms, max %.1f ms" % [gathers[5], gathers[9]])
+	picker.reset_selected()
+	picker.revoxelize()
+	picker.select(null)
+	set_live_mode("world")
+	teleport("entrance")
+	ui.set_split(0.5)
+	ui.tabs.current_tab = ui.tabs.get_tab_idx_from_control(ui.tabs.get_node("Stats"))
+	await _frames(60)
+	await _shot("ui_split_stats.png")
+	ui.set_split(-1.0)
+	ui.tabs.current_tab = 0
 	set_live_mode("world_heat")
 	teleport("corridor_end")
 	await _frames(40)
@@ -903,13 +960,28 @@ func _run() -> void:
 	var report := PackedStringArray()
 	var size := get_viewport().get_visible_rect().size
 	report.append("Scene %s, viewport %dx%d, GPU %s" % [scene_name, size.x, size.y, RenderingServer.get_video_adapter_name()])
-	effect_world.set_scene(RCW.collect_triangles(static_root), RCW.collect_lights(self))
+	# A/B switches for the measurements: the old CPU triangle packing, injecting the whole volume, far cascades every frame.
+	effect_world.inject_partial = not user_args.has("--inject-full")
+	for a in user_args:
+		if a.begins_with("--far-every="):
+			effect_world.far_every = int(a.trim_prefix("--far-every="))
+	var t0 := Time.get_ticks_usec()
+	if user_args.has("--cpu-voxelize"):
+		effect_world.set_scene(RCW.collect_triangles(static_root), RCW.collect_lights(self))
+	else:
+		effect_world.set_scene_meshes(RCW.collect_meshes(static_root), RCW.collect_lights(self))
+	collect_ms = (Time.get_ticks_usec() - t0) / 1000.0
 	if scene_name != "room":
+		t0 = Time.get_ticks_usec()
 		RenderingServer.call_on_render_thread(effect_world.rebuild)
+		RenderingServer.force_sync()
+		var rebuild_ms := (Time.get_ticks_usec() - t0) / 1000.0
 		await _frames(5)
 		report.append("voxel volume %s at %.2f m, %d static triangles, %d lights, %d cascades, probe spacing %.2f m, dynamic=%s" % [
 			effect_world.dims, effect_world.voxel_size, effect_world._tri_count, effect_world._light_count,
 			effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
+		report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
+			collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
 	var harness := user_args.has("--uitest") or user_args.has("--lag") or user_args.has("--pop") or user_args.has("--leak") or user_args.has("--motionmaps") or user_args.has("--motion") or user_args.has("--closeups") or user_args.has("--shots") or user_args.has("--sweep") or user_args.has("--bench") or user_args.has("--travel")
 	if not harness:
 		_start_interactive()
@@ -982,7 +1054,9 @@ func _run() -> void:
 	if user_args.has("--bench"):
 		var pose_name := "exit_back" if scene_name == "tunnel" else ("aisle" if scene_name == "shop" else ("down_street" if scene_name == "street" else "down_room"))
 		_pose(pose_name)
-		anim_auto = scene_name == "tunnel" or scene_name == "shop"
+		anim_auto = (scene_name == "tunnel" or scene_name == "shop") and not user_args.has("--still")
+		if user_args.has("--still") and shop != null:
+			shop.flicker_on = false # --still: nothing moves and no light changes (what re-lighting only the changes saves)
 		await _bench("GI off", "off", 200, report)
 		await _bench("screen-space RC", "ss", 200, report)
 		await _bench("world RC (dynamic: voxels + lights redone every frame)", "world", 200, report)
@@ -1086,6 +1160,11 @@ func _start_interactive() -> void:
 		anim_auto = true
 	live_mode = "world"
 	_set_mode("world")
+	if shop != null and picker == null:
+		picker = PICKER.new()
+		picker.name = "ObjectPicker"
+		add_child(picker)
+		picker.setup(self, shop.selectables)
 	ui = UI.new()
 	add_child(ui)
 	ui.setup(self)
@@ -1095,6 +1174,9 @@ func _start_interactive() -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if not interactive:
+		return
+	if picker != null and mouse_is_free() and picker.handle_input(event):
+		get_viewport().set_input_as_handled()
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
 		# The quote key (the one that types the quote, or the key above Tab) toggles the panel.
@@ -1137,4 +1219,4 @@ func _interactive_process(delta: float) -> void:
 		if Input.is_physical_key_pressed(KEY_Z): move -= 1.0
 		if Input.is_physical_key_pressed(KEY_X): move += 1.0
 		lamp_s = clampf(lamp_s + move * 4.0 * delta, 0.0, 9.8 if scene_name == "shop" else A_LEN + ARC_R * PI * 0.5 + B_LEN)
-	ui.refresh()
+	ui.refresh(delta)

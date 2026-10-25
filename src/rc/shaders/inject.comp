@@ -13,6 +13,10 @@ layout(set = 0, binding = 4, std430) restrict readonly buffer Lights {
 
 //#include trace.inc
 
+layout(push_constant, std430) uniform Region {
+	vec4 o; // first voxel of the region being re-lit (the dispatch covers the region only)
+} region;
+
 bool solid2(ivec3 c) {
 	return solid_cell(c) || imageLoad(vox_dyn, c).a > 0.5;
 }
@@ -61,7 +65,7 @@ float shadow(vec3 o, vec3 l, float stop) {
 }
 
 void main() {
-	ivec3 c = ivec3(gl_GlobalInvocationID);
+	ivec3 c = ivec3(gl_GlobalInvocationID) + ivec3(region.o.xyz);
 	if (!in_vol(c)) {
 		return;
 	}

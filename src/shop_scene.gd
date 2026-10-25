@@ -43,6 +43,7 @@ var dolly: Node3D
 var dolly_lamp: OmniLight3D
 var dolly_bulb: MeshInstance3D
 var poses := {}
+var selectables: Array[Node3D] = [] # the props the object picker can select and move
 
 
 ## The props, as boxes: [centre (pivot at the bottom centre, +z = front), size, colour, emission]. Sizes are real-world metres,
@@ -104,6 +105,8 @@ func prop(parent: Node, path: String, pos: Vector3, yaw := 0.0) -> Node3D:
 	n.position = pos
 	n.rotation.y = yaw
 	parent.add_child(n)
+	if parent == main.static_root:
+		selectables.append(n)
 	return n
 
 

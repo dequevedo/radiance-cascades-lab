@@ -26,6 +26,10 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var temporal_adaptive := 1.2 # extra weight of the new frame where it differs a lot from the history (0 = fixed alpha)
 @export var temporal_alpha := 0.25 # weight of the new frame (lower = smoother but slower to follow changes)
 @export var dynamic := false # per frame: reset to the static voxels, add dynamic triangles, re-inject the lights
+@export var inject_partial := true # re-light only the part of the volume that a changed light or a moving object can affect
+@export var far_every := 2 # the far cascades (far_from and up) are traced every Nth frame; 1 = every frame
+@export var far_from := 2
+@export var split := -1.0 # split view: fraction of the screen width, left of it shows no bounce light; < 0 = off
 
 const MAX_DYN_BOXES := 64
 
@@ -66,6 +70,26 @@ var _prev_vp := Projection.IDENTITY
 var _screen_tex_size := Vector2i.ZERO
 var albedo_texture_rid := RID() # ViewportTexture RID of the unshaded albedo render, set by the scene
 var voxelize_ms := 0.0
+# Static geometry as meshes for the GPU voxelizer: world-space vertices, indices, and per surface
+# (triangle count, first index, first vertex, 0, albedo rgb, 0).
+var _mesh_verts := PackedVector3Array()
+var _mesh_idx := PackedInt32Array()
+var _mesh_surf := PackedFloat32Array()
+var _vert_buf := RID()
+var _idx_buf := RID()
+# Far cascades kept between frames.
+var _probe_keep := RID()
+var _keep_valid := false
+var _cframe := 0
+var last_far_skipped := false
+# What was injected last time, to find what changed.
+var _rad_full := true
+var _prev_lights := PackedFloat32Array()
+var _prev_boxes := PackedFloat32Array()
+var _prev_dyn_min := Vector3.ZERO
+var _prev_dyn_max := Vector3.ZERO
+var _prev_dyn_count := 0
+var inject_fraction := 1.0 # share of the volume re-lit in the last frame (0 = nothing changed)
 
 
 func _init() -> void:
@@ -159,6 +183,57 @@ static func collect_triangles(root: Node) -> PackedFloat32Array:
 	return out
 
 
+## Every visible mesh surface under root, for the GPU voxelizer: world-space vertices (one native multiply per surface, no
+## per-triangle work in GDScript), indices as they are, and one record per surface. Same skip rules as collect_triangles.
+static var _surface_cache := {}
+
+
+static func collect_meshes(root: Node) -> Dictionary:
+	var verts := PackedVector3Array()
+	var idx := PackedInt32Array()
+	var surf := PackedFloat32Array()
+	var stack: Array[Node] = [root]
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		var mi := node as MeshInstance3D
+		if mi == null or mi.mesh == null or not mi.visible or mi.has_meta("rc_skip") or mi.has_meta("rc_proxy"):
+			continue
+		var xf := mi.global_transform
+		for si in mi.mesh.get_surface_count():
+			if mi.mesh is ArrayMesh and (mi.mesh as ArrayMesh).surface_get_primitive_type(si) != Mesh.PRIMITIVE_TRIANGLES:
+				continue
+			var mat: Material = mi.get_surface_override_material(si)
+			if mat == null:
+				mat = mi.material_override
+			if mat == null:
+				mat = mi.mesh.surface_get_material(si)
+			var albedo := _material_albedo(mat)
+			if mi.has_meta("rc_albedo"):
+				albedo = (mi.get_meta("rc_albedo") as Color).srgb_to_linear()
+			# A mesh's local arrays are read once (reading a primitive mesh builds them every time) and kept for the next gather.
+			var key := "%d:%d" % [mi.mesh.get_instance_id(), si]
+			var cached: Array = _surface_cache.get(key, [])
+			if cached.is_empty():
+				var arr := mi.mesh.surface_get_arrays(si)
+				var cv: PackedVector3Array = arr[Mesh.ARRAY_VERTEX]
+				var ci := PackedInt32Array()
+				if arr[Mesh.ARRAY_INDEX] != null and (arr[Mesh.ARRAY_INDEX] as PackedInt32Array).size() > 0:
+					ci = arr[Mesh.ARRAY_INDEX]
+				else:
+					ci.resize(cv.size())
+					for k in cv.size():
+						ci[k] = k
+				cached = [cv, ci]
+				_surface_cache[key] = cached
+			var v: PackedVector3Array = cached[0]
+			var ii: PackedInt32Array = cached[1]
+			surf.append_array([ii.size() / 3, idx.size(), verts.size(), 0.0, albedo.r, albedo.g, albedo.b, 0.0])
+			verts.append_array(xf * v)
+			idx.append_array(ii)
+	return {"verts": verts, "idx": idx, "surf": surf, "tris": idx.size() / 3}
+
+
 ## Boxes (BoxMesh) under root as (centre, half-extent vector x, y, z, albedo) vec4 records, for objects that move: they are
 ## voxelized every frame with fractional coverage instead of as triangles.
 static func collect_boxes(root, flat := false) -> PackedFloat32Array:
@@ -245,6 +320,26 @@ func update_dynamic(boxes: PackedFloat32Array, lights: PackedFloat32Array) -> vo
 func set_scene(tris: PackedFloat32Array, lights: PackedFloat32Array) -> void:
 	_tris = tris
 	_tri_count = tris.size() / 16
+	_mesh_surf = PackedFloat32Array()
+	_lights = lights
+	_light_count = mini(lights.size() / 12, 16)
+
+
+## New static meshes only (a prop was moved): call revoxelize_static() on the render thread after it.
+func set_static_meshes(meshes: Dictionary) -> void:
+	_mesh_verts = meshes["verts"]
+	_mesh_idx = meshes["idx"]
+	_mesh_surf = meshes["surf"]
+	_tri_count = meshes["tris"]
+
+
+## Like set_scene, with the meshes from collect_meshes (voxelized on the GPU).
+func set_scene_meshes(meshes: Dictionary, lights: PackedFloat32Array) -> void:
+	_mesh_verts = meshes["verts"]
+	_mesh_idx = meshes["idx"]
+	_mesh_surf = meshes["surf"]
+	_tri_count = meshes["tris"]
+	_tris = PackedFloat32Array()
 	_lights = lights
 	_light_count = mini(lights.size() / 12, 16)
 
@@ -269,7 +364,7 @@ func _init_rd() -> void:
 	rd = RenderingServer.get_rendering_device()
 	if rd == null:
 		return
-	for n in ["voxelize", "voxelize_boxes", "inject", "cascade3d", "gather3d", "nearfield", "final", "probe_weights"]:
+	for n in ["voxelize", "voxelize_mesh", "voxelize_boxes", "inject", "cascade3d", "gather3d", "nearfield", "final", "probe_weights"]:
 		_shader[n] = _compile(n)
 		if (_shader[n] as RID).is_valid():
 			_pipe[n] = rd.compute_pipeline_create(_shader[n])
@@ -298,9 +393,15 @@ func free_resources() -> void:
 
 
 func _free_volume() -> void:
-	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1]]:
+	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1],
+			_probe_keep, _vert_buf, _idx_buf]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
+	_probe_keep = RID()
+	_vert_buf = RID()
+	_idx_buf = RID()
+	_keep_valid = false
+	_rad_full = true
 	_tri_buf = RID()
 	_light_buf = RID()
 	_dyn_buf = RID()
@@ -345,7 +446,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	_pack_mat(proj, p)
 	_pack_mat(proj.inverse(), p)
 	_pack_mat(cam_to_world, p)
-	p.append_array([size.x, size.y, 0.0, 0.0])
+	p.append_array([size.x, size.y, split, 0.0])
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
@@ -376,7 +477,7 @@ func _ubo_u() -> RDUniform:
 	return _u(RenderingDevice.UNIFORM_TYPE_UNIFORM_BUFFER, 0, [_ubo])
 
 
-## Voxelizes the triangles and injects the direct light. Call on the render thread after set_scene().
+## Voxelizes the scene and injects the direct light. Call on the render thread after set_scene() or set_scene_meshes().
 func rebuild() -> void:
 	if rd == null or _tri_count == 0 or not (_pipe.has("voxelize") and _pipe.has("inject")):
 		return
@@ -393,40 +494,94 @@ func rebuild() -> void:
 		pd = Vector3i(maxi(pd.x, g.x * a), maxi(pd.y, g.y * a), maxi(pd.z, g.z))
 	_probe_dim = pd
 	_probe = [_tex3d(pd, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT), _tex3d(pd, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)]
+	_probe_keep = _tex3d(pd, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	var g0 := _grid(probe_spacing)
 	_pw_lo = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	_pw_hi = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
-	var tb := _tris.to_byte_array()
-	_tri_buf = rd.storage_buffer_create(tb.size(), tb)
 	var lights := _lights.duplicate()
 	lights.resize(16 * 12)
 	var lb := lights.to_byte_array()
 	_light_buf = rd.storage_buffer_create(lb.size(), lb)
 	_write_ubo(Projection.IDENTITY, Projection.IDENTITY, Vector2i(1, 1))
-
 	var dyn_bytes := PackedFloat32Array()
 	dyn_bytes.resize(MAX_DYN_BOXES * 20)
 	var db := dyn_bytes.to_byte_array()
 	_dyn_buf = rd.storage_buffer_create(db.size(), db)
-	var set_v := UniformSetCacheRD.get_cache(_shader["voxelize"], 0,
-		[_ubo_u(), _img(1, _vox_static), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_tri_buf])])
+	_voxelize_static()
+	var cl := rd.compute_list_begin()
+	_inject(cl, Vector3i.ZERO, dims)
+	rd.compute_list_end()
+	volume_ready = true
+
+
+## Voxelizes the static scene again (after a prop was moved or recoloured): same volume, new contents. Render thread.
+func revoxelize_static() -> void:
+	if rd == null or not volume_ready:
+		return
+	_write_ubo(Projection.IDENTITY, Projection.IDENTITY, Vector2i(1, 1))
+	_voxelize_static()
+	if not dynamic:
+		var cl := rd.compute_list_begin()
+		_inject(cl, Vector3i.ZERO, dims)
+		rd.compute_list_end()
+
+
+## Static geometry -> _vox_static -> _vox_albedo. From the meshes (GPU) when there are any, else from the packed triangles.
+func _voxelize_static() -> void:
+	var t0 := Time.get_ticks_usec()
+	rd.texture_clear(_vox_static, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	if _mesh_surf.size() > 0 and _pipe.has("voxelize_mesh"):
+		for r in [_vert_buf, _idx_buf]:
+			if (r as RID).is_valid():
+				rd.free_rid(r)
+		var vb := _mesh_verts.to_byte_array()
+		_vert_buf = rd.storage_buffer_create(vb.size(), vb)
+		var ib := _mesh_idx.to_byte_array()
+		_idx_buf = rd.storage_buffer_create(ib.size(), ib)
+		var set_m := UniformSetCacheRD.get_cache(_shader["voxelize_mesh"], 0,
+			[_ubo_u(), _img(1, _vox_static), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_vert_buf]),
+			 _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 6, [_idx_buf])])
+		var cl := rd.compute_list_begin()
+		rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize_mesh"])
+		rd.compute_list_bind_uniform_set(cl, set_m, 0)
+		for k in _mesh_surf.size() / 8:
+			var o := k * 8
+			var tris := int(_mesh_surf[o])
+			if tris == 0:
+				continue
+			rd.compute_list_set_push_constant(cl, _mesh_surf.slice(o, o + 8).to_byte_array(), 32)
+			rd.compute_list_dispatch(cl, ceili(tris / 64.0), 1, 1)
+		rd.compute_list_end()
+	else:
+		if _tri_buf.is_valid():
+			rd.free_rid(_tri_buf)
+		var tb := _tris.to_byte_array()
+		_tri_buf = rd.storage_buffer_create(tb.size(), tb)
+		var set_v := UniformSetCacheRD.get_cache(_shader["voxelize"], 0,
+			[_ubo_u(), _img(1, _vox_static), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_tri_buf])])
+		var cl := rd.compute_list_begin()
+		rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize"])
+		rd.compute_list_bind_uniform_set(cl, set_v, 0)
+		var pc := PackedFloat32Array([_tri_count, 0.0, 0.0, 0.0])
+		rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 16)
+		rd.compute_list_dispatch(cl, ceili(_tri_count / 64.0), 1, 1)
+		rd.compute_list_end()
+	rd.texture_copy(_vox_static, _vox_albedo, Vector3.ZERO, Vector3.ZERO, Vector3(dims), 0, 0, 0, 0)
+	voxelize_ms = (Time.get_ticks_usec() - t0) / 1000.0 # time to record the work (the GPU runs it after)
+	_rad_full = true
+	_keep_valid = false
+
+
+## Direct light into the voxels of one region (first voxel lo, size n) of the volume.
+func _inject(cl: int, lo: Vector3i, n: Vector3i) -> void:
+	rd.compute_list_bind_compute_pipeline(cl, _pipe["inject"])
 	var set_i := UniformSetCacheRD.get_cache(_shader["inject"], 0,
 		[_ubo_u(), _img(1, _vox_albedo), _img(3, _vox_rad), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 4, [_light_buf]),
 		 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]), _img(21, _vox_dyn)])
-	var cl := rd.compute_list_begin()
-	rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize"])
-	rd.compute_list_bind_uniform_set(cl, set_v, 0)
-	var pc := PackedFloat32Array([_tri_count, 0.0, 0.0, 0.0])
-	rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 16)
-	rd.compute_list_dispatch(cl, ceili(_tri_count / 64.0), 1, 1)
-	rd.compute_list_end()
-	rd.texture_copy(_vox_static, _vox_albedo, Vector3.ZERO, Vector3.ZERO, Vector3(dims), 0, 0, 0, 0)
-	cl = rd.compute_list_begin()
-	rd.compute_list_bind_compute_pipeline(cl, _pipe["inject"])
 	rd.compute_list_bind_uniform_set(cl, set_i, 0)
-	rd.compute_list_dispatch(cl, ceili(dims.x / 4.0), ceili(dims.y / 4.0), ceili(dims.z / 4.0))
-	rd.compute_list_end()
-	volume_ready = true
+	var pc := PackedFloat32Array([lo.x, lo.y, lo.z, 0.0])
+	rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 16)
+	rd.compute_list_dispatch(cl, ceili(n.x / 4.0), ceili(n.y / 4.0), ceili(n.z / 4.0))
 
 
 func _render_callback(_type: int, render_data: RenderData) -> void:
@@ -462,8 +617,16 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		_update_dynamic_volume()
 	var cl := rd.compute_list_begin()
 	rd.compute_list_bind_compute_pipeline(cl, _pipe["cascade3d"])
-	var src := 0
-	for n in range(cascades - 1, -1, -1):
+	# The far cascades change slowly: on most frames they are not traced again, and the nearer ones merge with the copy kept
+	# from the last frame that traced them.
+	var keep := far_every > 1 and cascades > far_from
+	var skip_far := keep and _keep_valid and _cframe % far_every != 0
+	last_far_skipped = skip_far
+	var top := far_from - 1 if skip_far else cascades - 1
+	var inp: RID = _probe_keep if skip_far else _probe[1]
+	var outi := 0
+	for n in range(top, -1, -1):
+		var out_t: RID = _probe[outi]
 		var spacing := probe_spacing * pow(2.0, n)
 		var an := A0 << n
 		var g := _grid(spacing)
@@ -483,7 +646,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			rd.compute_list_add_barrier(cl)
 			rd.compute_list_bind_compute_pipeline(cl, _pipe["cascade3d"])
 		var set_rid := UniformSetCacheRD.get_cache(_shader["cascade3d"], 0,
-			[_ubo_u(), _img(1, _vox_albedo), _img(3, _vox_rad), _img(6, _probe[src]), _img(7, _probe[1 - src]), _img(19, _pw_lo), _img(20, _pw_hi),
+			[_ubo_u(), _img(1, _vox_albedo), _img(3, _vox_rad), _img(6, inp), _img(7, out_t), _img(19, _pw_lo), _img(20, _pw_hi),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 14, [_sampler_lin, _vox_albedo]),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 15, [_sampler_lin, _vox_rad]),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn])])
@@ -492,8 +655,16 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 32)
 		rd.compute_list_dispatch(cl, ceili(tdim.x / 4.0), ceili(tdim.y / 4.0), ceili(tdim.z / 4.0))
 		rd.compute_list_add_barrier(cl)
-		src = 1 - src
+		if keep and not skip_far and n == far_from:
+			rd.compute_list_end()
+			rd.texture_copy(out_t, _probe_keep, Vector3.ZERO, Vector3.ZERO, Vector3(_probe_dim), 0, 0, 0, 0)
+			_keep_valid = true
+			cl = rd.compute_list_begin()
+			rd.compute_list_bind_compute_pipeline(cl, _pipe["cascade3d"])
+		inp = out_t
+		outi = 1 - outi
 	rd.compute_list_end()
+	_cframe += 1
 	rd.capture_timestamp("RC cascades")
 
 	if use_final:
@@ -503,7 +674,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		cl = rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["nearfield"])
 		var near_set := UniformSetCacheRD.get_cache(_shader["nearfield"], 0,
-			[_ubo_u(), _img(1, _vox_albedo), depth_u, _img(10, _probe[src]), _img(12, _near_tex), _img(13, _nrm[cur]),
+			[_ubo_u(), _img(1, _vox_albedo), depth_u, _img(10, inp), _img(12, _near_tex), _img(13, _nrm[cur]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 14, [_sampler_lin, _vox_albedo]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 15, [_sampler_lin, _vox_rad]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn])])
@@ -532,7 +703,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 	cl = rd.compute_list_begin()
 	rd.compute_list_bind_compute_pipeline(cl, _pipe["gather3d"])
 	var gather_set := UniformSetCacheRD.get_cache(_shader["gather3d"], 0,
-		[_ubo_u(), _img(1, _vox_albedo), depth_u, color_u, _img(10, _probe[src]), albedo_u])
+		[_ubo_u(), _img(1, _vox_albedo), depth_u, color_u, _img(10, inp), albedo_u])
 	var gpc := PackedFloat32Array([A0, 0.0, 0.0, 0.0])
 	rd.compute_list_bind_uniform_set(cl, gather_set, 0)
 	rd.compute_list_set_push_constant(cl, gpc.to_byte_array(), 16)
@@ -562,19 +733,24 @@ func _ensure_screen_textures(size: Vector2i) -> void:
 	_hist_valid = false
 
 
-## Per frame: static voxels -> working volume, dynamic triangles on top, lights injected again.
+## Per frame: the moving objects voxelized again (when they moved), then the direct light injected again, but only into the part of
+## the volume that can have changed: the reach of every light that changed, and of every light that reaches a moving object.
 func _update_dynamic_volume() -> void:
-	rd.texture_clear(_vox_dyn, Color(0, 0, 0, 0), 0, 1, 0, 1)
-	rd.capture_timestamp("RC clear dynamic")
 	var lights := _lights.duplicate()
 	lights.resize(16 * 12)
 	var lb := lights.to_byte_array()
 	rd.buffer_update(_light_buf, 0, lb.size(), lb)
-	if _dyn_count > 0:
-		var tb := _dyn_boxes.slice(0, _dyn_count * 20).to_byte_array()
-		rd.buffer_update(_dyn_buf, 0, tb.size(), tb)
+	var boxes := _dyn_boxes.slice(0, _dyn_count * 20)
+	var boxes_moved := _rad_full or _dyn_count != _prev_dyn_count or boxes != _prev_boxes
 	var cl := rd.compute_list_begin()
-	if _dyn_count > 0:
+	if boxes_moved:
+		rd.compute_list_end()
+		rd.texture_clear(_vox_dyn, Color(0, 0, 0, 0), 0, 1, 0, 1)
+		if _dyn_count > 0:
+			var tb := boxes.to_byte_array()
+			rd.buffer_update(_dyn_buf, 0, tb.size(), tb)
+		cl = rd.compute_list_begin()
+	if boxes_moved and _dyn_count > 0:
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize_boxes"])
 		var set_v := UniformSetCacheRD.get_cache(_shader["voxelize_boxes"], 0,
 			[_ubo_u(), _img(1, _vox_dyn), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_dyn_buf])])
@@ -592,14 +768,86 @@ func _update_dynamic_volume() -> void:
 			rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 16)
 			rd.compute_list_dispatch(cl, ceili(n.x / 4.0), ceili(n.y / 4.0), ceili(n.z / 4.0))
 		rd.compute_list_add_barrier(cl)
-	rd.compute_list_bind_compute_pipeline(cl, _pipe["inject"])
-	var set_i := UniformSetCacheRD.get_cache(_shader["inject"], 0,
-		[_ubo_u(), _img(1, _vox_albedo), _img(3, _vox_rad), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 4, [_light_buf]),
-		 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]), _img(21, _vox_dyn)])
-	rd.compute_list_bind_uniform_set(cl, set_i, 0)
-	rd.compute_list_dispatch(cl, ceili(dims.x / 4.0), ceili(dims.y / 4.0), ceili(dims.z / 4.0))
+	var region := _dirty_region(boxes_moved)
+	inject_fraction = 0.0
+	if region.size != Vector3i.ZERO:
+		_inject(cl, region.position, region.size)
+		inject_fraction = float(region.size.x * region.size.y * region.size.z) / float(dims.x * dims.y * dims.z)
 	rd.compute_list_end()
 	rd.capture_timestamp("RC dynamic voxels + inject")
+	_prev_lights = _lights.duplicate()
+	_prev_boxes = boxes
+	_prev_dyn_count = _dyn_count
+	_prev_dyn_min = _dyn_min
+	_prev_dyn_max = _dyn_max
+	_rad_full = false
+
+
+## The voxels to light again this frame, as an AABBi (size zero = none).
+func _dirty_region(boxes_moved: bool) -> AABBi:
+	var whole := AABBi.new(Vector3i.ZERO, dims)
+	if _rad_full or not inject_partial:
+		return whole
+	var lo := Vector3(INF, INF, INF)
+	var hi := Vector3(-INF, -INF, -INF)
+	var count := maxi(_lights.size(), _prev_lights.size()) / 12
+	for i in count:
+		var o := i * 12
+		var now := _lights.slice(o, o + 12)
+		var was := _prev_lights.slice(o, o + 12)
+		if now == was:
+			continue
+		for rec in [now, was]:
+			if rec.size() < 12:
+				continue
+			if rec[7] > 0.5: # a directional light changed: its shadows can move anywhere
+				if rec[4] + rec[5] + rec[6] > 0.0:
+					return whole
+				continue
+			var r: Vector3 = Vector3.ONE * float(rec[3])
+			var p := Vector3(float(rec[0]), float(rec[1]), float(rec[2]))
+			lo = lo.min(p - r)
+			hi = hi.max(p + r)
+	if boxes_moved:
+		var b_lo := _dyn_min if _dyn_count > 0 else Vector3(INF, INF, INF)
+		var b_hi := _dyn_max if _dyn_count > 0 else Vector3(-INF, -INF, -INF)
+		if _prev_dyn_count > 0:
+			b_lo = b_lo.min(_prev_dyn_min)
+			b_hi = b_hi.max(_prev_dyn_max)
+		if b_lo.x <= b_hi.x:
+			lo = lo.min(b_lo)
+			hi = hi.max(b_hi)
+			# Every light that reaches the moving objects can cast a changed shadow anywhere in its own reach.
+			for i in _lights.size() / 12:
+				var o := i * 12
+				if _lights[o + 7] > 0.5:
+					if _lights[o + 4] + _lights[o + 5] + _lights[o + 6] > 0.0:
+						return whole
+					continue
+				var p := Vector3(_lights[o], _lights[o + 1], _lights[o + 2])
+				var r := _lights[o + 3]
+				if p.clamp(b_lo, b_hi).distance_to(p) <= r:
+					lo = lo.min(p - Vector3.ONE * r)
+					hi = hi.max(p + Vector3.ONE * r)
+	if lo.x > hi.x:
+		return AABBi.new(Vector3i.ZERO, Vector3i.ZERO)
+	# A few voxels of margin: the surface normal of a voxel looks two voxels around it.
+	var margin := Vector3.ONE * 3.0
+	var v_lo := Vector3i(((lo - volume_min) / voxel_size - margin).floor().clamp(Vector3.ZERO, Vector3(dims)))
+	var v_hi := Vector3i(((hi - volume_min) / voxel_size + margin).ceil().clamp(Vector3.ZERO, Vector3(dims)))
+	var size := v_hi - v_lo
+	if size.x <= 0 or size.y <= 0 or size.z <= 0:
+		return AABBi.new(Vector3i.ZERO, Vector3i.ZERO)
+	return AABBi.new(v_lo, size)
+
+
+class AABBi:
+	var position: Vector3i
+	var size: Vector3i
+
+	func _init(p: Vector3i, s: Vector3i) -> void:
+		position = p
+		size = s
 
 
 ## GPU time (ms) of the passes captured in the last finished frame, keyed by pass name.
