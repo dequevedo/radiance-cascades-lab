@@ -10,6 +10,7 @@ extends Node3D
 const RC := preload("res://src/rc/rc_effect.gd")
 const RCW := preload("res://src/rc/rc_world_effect.gd")
 const SHOP := preload("res://src/shop_scene.gd")
+const CITY := preload("res://src/city_scene.gd")
 const UI := preload("res://src/ui_panel.gd")
 const PICKER := preload("res://src/object_picker.gd")
 
@@ -21,7 +22,9 @@ var world_env: WorldEnvironment
 var static_root: Node3D
 var dyn_root: Node3D
 var user_args := PackedStringArray()
-var shop
+var shop # the scene: the store and its rooms (shop_scene.gd) or the city (city_scene.gd, --city)
+var city_mode := false
+var scene_script = SHOP
 var poses := {}
 
 var _parent: Node
@@ -57,7 +60,12 @@ func _ready() -> void:
 	dyn_root.name = "DynamicRoot"
 	add_child(dyn_root)
 	_parent = static_root
-	_build_shop()
+	city_mode = user_args.has("--city")
+	scene_script = CITY if city_mode else SHOP
+	if city_mode:
+		_build_city()
+	else:
+		_build_shop()
 	effect_ss = RC.new()
 	effect_world = RCW.new()
 	effect_world.dynamic = true
@@ -66,12 +74,21 @@ func _ready() -> void:
 	# pixel tile); --quality=default starts at the older, cheaper settings (12.5 cm, 0.5 m, 6 x 6).
 	var high := not user_args.has("--quality=default")
 	effect_world.voxel_size = 0.1 if high else 0.125
-	var vs: Vector3 = SHOP.VOLUME_SIZE
-	effect_world.dims = Vector3i(ceili(vs.x / effect_world.voxel_size), ceili(vs.y / effect_world.voxel_size), ceili(vs.z / effect_world.voxel_size))
-	effect_world.volume_min = SHOP.VOLUME_MIN
 	effect_world.probe_spacing = 0.35 if high else 0.5
 	effect_world.near_dirs = 8 if high else 6
 	effect_world.temporal_alpha = 0.2 if high else 0.25
+	if city_mode:
+		# The city: a 64 x 24 x 64 m volume that follows the camera in 8 m steps (the spacing of the top cascade's probes, so
+		# every probe grid stays where it was), 25 cm voxels, probes 1 m apart.
+		effect_world.voxel_size = 0.25
+		effect_world.probe_spacing = 1.0
+		effect_world.interval0 = 1.0
+		effect_world.near_range = 1.0
+		effect_world.temporal_alpha = 0.25
+		effect_world.follow_step = CITY.FOLLOW_STEP
+	var vs: Vector3 = scene_script.VOLUME_SIZE
+	effect_world.dims = Vector3i(ceili(vs.x / effect_world.voxel_size), ceili(vs.y / effect_world.voxel_size), ceili(vs.z / effect_world.voxel_size))
+	effect_world.volume_min = scene_script.VOLUME_MIN
 	effect_world.sky_radiance = Color.BLACK
 	effect_world.sky_horizon = Color.BLACK
 	effect_world.sky_ground = Color.BLACK
@@ -135,8 +152,20 @@ func _build_shop() -> void:
 	_animate(0.0)
 
 
+## The city instead of the store (--city): a large procedural scene for the volume that follows the camera.
+func _build_city() -> void:
+	shop = CITY.new()
+	shop.build(self)
+	poses = shop.poses
+	lamp_s = 0.0
+	_animate(0.0)
+
+
 ## Dolly position along the aisle (lamp_s wins when the animation is off) and the live light settings, at time t.
 func _animate(t: float) -> void:
+	if city_mode:
+		shop.animate(0.0, t)
+		return
 	var span := 9.8
 	if anim_auto and not anim_paused:
 		var u := fposmod(t * 1.1 / span, 2.0)
@@ -172,6 +201,49 @@ func _pose(name: String) -> void:
 	var p: Array = poses[name]
 	cam.position = p[0]
 	cam.look_at(p[1])
+
+
+## The volume that follows the camera: the camera walks 120 m down an avenue at 6 m/s (0.1 m a frame), and every frame's GPU and
+## CPU time is kept; the frames where the volume moved are the ones to look at. A few pictures on the way.
+func _follow_test(report: PackedStringArray) -> void:
+	anim_auto = true
+	_set_mode("world")
+	var start := Vector3(-60.0, 1.7, CITY.PITCH * 0.5 + 1.0)
+	cam.position = start
+	cam.look_at(start + Vector3(10, 0, 0))
+	await _frames(30)
+	var vp := get_viewport().get_viewport_rid()
+	var gpu: Array[float] = []
+	var cpu: Array[float] = []
+	var moves: Array[int] = []
+	var moved_ms: Array[float] = []
+	var n0: int = effect_world.recentres
+	var last := Time.get_ticks_usec()
+	for i in 1200:
+		cam.position = start + Vector3(i * 0.1, 0, 0)
+		var before: int = effect_world.recentres
+		await _frames(1)
+		var now := Time.get_ticks_usec()
+		cpu.append((now - last) / 1000.0)
+		last = now
+		gpu.append(RenderingServer.viewport_get_measured_render_time_gpu(vp))
+		if effect_world.recentres != before:
+			moves.append(i)
+			moved_ms.append(effect_world.recentre_ms)
+		if i % 300 == 150:
+			await _shot("follow_%04d.png" % i)
+	var g := gpu.duplicate()
+	g.sort()
+	var c := cpu.duplicate()
+	c.sort()
+	report.append("follow: %d moves of the volume in %d frames (%.0f m); GPU median %.2f ms, p99 %.2f ms, max %.2f ms; frame median %.2f ms, max %.2f ms" % [
+		effect_world.recentres - n0, gpu.size(), gpu.size() * 0.1, g[g.size() / 2], g[int(g.size() * 0.99)], g[-1], c[c.size() / 2], c[-1]])
+	for k in moves.size():
+		var i: int = moves[k]
+		var around := []
+		for j in range(maxi(i - 1, 0), mini(i + 3, gpu.size())):
+			around.append("%.1f/%.1f" % [gpu[j], cpu[j]])
+		report.append("  move at frame %d (recorded in %.1f ms): GPU/frame ms around it: %s" % [i, moved_ms[k], " ".join(around)])
 
 
 ## Close views of where walls, floors and ceilings meet (doors, openings, corners, the start of the bend).
@@ -620,7 +692,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow")
 	if not harness:
 		_start_interactive()
 		return
@@ -632,6 +704,8 @@ func _run() -> void:
 		await _flicker(report)
 	if user_args.has("--buildtest"):
 		await _build_test(report)
+	if user_args.has("--follow"):
+		await _follow_test(report)
 	if user_args.has("--mattest"):
 		anim_auto = false
 		_pose("materials")
@@ -738,6 +812,7 @@ func _process(delta: float) -> void:
 			_box_nodes = RCW.find_nodes(dyn_root, [MeshInstance3D]).filter(func(n): return (n as MeshInstance3D).mesh is BoxMesh)
 		RenderingServer.call_on_render_thread(effect_world.update_dynamic.bind(
 			RCW.collect_boxes(_box_nodes, true), RCW.collect_lights(_light_nodes, true)))
+		effect_world.follow(cam.global_position)
 	if interactive:
 		_interactive_process(delta)
 
@@ -796,7 +871,7 @@ func sync_camera_angles() -> void:
 
 
 func volume_size() -> Vector3:
-	return SHOP.VOLUME_SIZE
+	return scene_script.VOLUME_SIZE
 
 
 ## Daylight: a sun through the windows, a sky for the bounce, a little ambient.
@@ -814,7 +889,7 @@ func set_sun(v: float) -> void:
 
 func _start_interactive() -> void:
 	interactive = true
-	_pose("entrance")
+	_pose("avenue" if city_mode else "entrance")
 	_yaw = cam.rotation.y
 	_pitch = cam.rotation.x
 	anim_auto = true

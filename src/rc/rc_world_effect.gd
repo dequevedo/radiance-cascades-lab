@@ -46,6 +46,10 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var solid_fill := true # fill the inside of closed meshes (else objects are hollow shells and probes inside them leak)
 @export var spec_strength := 1.0 # glossy reflections from the probes (Fresnel-weighted, blurred)
 @export var emission_scale := 1.0 # emissive surfaces light the scene, times this
+@export var follow_step := 0.0 # > 0: the volume follows the camera, moving in steps of this many metres
+var recentres := 0 # how many times the volume has moved
+var recentre_ms := 0.0 # CPU time of the last move (recording the GPU work)
+var _follow_target := Vector3.INF
 @export var split := -1.0 # split view: fraction of the screen width, left of it shows no bounce light; < 0 = off
 
 const MAX_DYN_BOXES := 64
@@ -711,6 +715,44 @@ func debug_count_solid() -> void:
 		if data[k] > 127:
 			n += 1
 	debug_solid_count = n
+
+
+## Main thread, every frame: when the camera has moved more than follow_step from the volume's centre (sideways), the volume is
+## moved under it, snapped to follow_step (the spacing of the top cascade's probes, so every probe grid stays on its grid).
+func follow(cam_pos: Vector3) -> void:
+	if follow_step <= 0.0 or not volume_ready:
+		return
+	var size := Vector3(dims) * voxel_size
+	var base: Vector3 = _follow_target if _follow_target != Vector3.INF else volume_min
+	var centre := base + size * 0.5
+	if absf(cam_pos.x - centre.x) <= follow_step and absf(cam_pos.z - centre.z) <= follow_step:
+		return
+	var want := Vector3(snappedf(cam_pos.x - size.x * 0.5, follow_step), base.y, snappedf(cam_pos.z - size.z * 0.5, follow_step))
+	if want == base:
+		return
+	_follow_target = want
+	RenderingServer.call_on_render_thread(_recentre.bind(want))
+
+
+## Render thread: the volume moves to new_min. Its voxels are made again from the meshes that reach it and lit from scratch; the
+## probe light kept between frames is dropped (the bounce builds up again over a few frames).
+func _recentre(new_min: Vector3) -> void:
+	if rd == null or not volume_ready:
+		return
+	var t0 := Time.get_ticks_usec()
+	volume_min = new_min
+	_write_ubo(Projection.IDENTITY, Projection.IDENTITY, Vector2i(1, 1))
+	_voxelize_static()
+	rd.texture_clear(_amb, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	rd.texture_clear(_vox_dyn, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	rd.texture_clear(_vox_dyn_emit, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	_keep_valid = false
+	_prev_dyn_count = 0
+	var cl := rd.compute_list_begin()
+	_inject(cl, Vector3i.ZERO, dims)
+	rd.compute_list_end()
+	recentres += 1
+	recentre_ms = (Time.get_ticks_usec() - t0) / 1000.0
 
 
 ## Voxelizes the static scene again (after a prop was moved or recoloured): same volume, new contents. Render thread.

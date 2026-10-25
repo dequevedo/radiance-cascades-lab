@@ -459,6 +459,16 @@ func _build_quality(body: VBoxContainer) -> void:
 func _build_scene(body: VBoxContainer) -> void:
 	_slider(body, "Exposure", 0.2, 4.0, 0.05, main.world_env.environment.tonemap_exposure, func(v): main.world_env.environment.tonemap_exposure = v,
 		"The camera's brightness (Godot's tone mapping).")
+	if main.city_mode:
+		_slider(body, "Street lamps", 0.0, 3.0, 0.05, shop.lamp_scale, func(v): shop.lamp_scale = v,
+			"All the street lamps and the string lights of the plaza and the market.")
+		_slider(body, "Sun", 0.0, 10.0, 0.1, main.sun_value, func(v): main.set_sun(v), "Daylight: a sun and a sky.", "%.1f")
+		_slider(body, "Glowing surfaces", 0.0, 4.0, 0.1, effect.emission_scale, func(v): effect.emission_scale = v,
+			"How much the neon signs, the lit windows and the shop windows light the street through the bounce.")
+		_slider(body, "Glossy reflections", 0.0, 2.0, 0.05, effect.spec_strength, func(v): effect.spec_strength = v,
+			"Reflections on the cars' paint and the fountain's water.")
+		_label(body, "The GI volume (64 x 24 x 64 m) follows the camera in 8 m steps.", DIM)
+		return
 	_slider(body, "Ceiling lights", 0.0, 3.0, 0.05, shop.ceiling_scale, func(v): shop.ceiling_scale = v,
 		"The six fluorescents. 0 = the store is lit only by the street lamp.")
 	_slider(body, "Street lamp", 0.0, 150.0, 1.0, shop.street_energy, func(v): shop.street_energy = v,
