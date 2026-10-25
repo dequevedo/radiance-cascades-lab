@@ -15,7 +15,7 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 
 ![The materials room: Godot alone and with radiance cascades](docs/readme/materials_room.jpg)
 
-![Chrome and gold spheres reflecting the room](docs/readme/metal_spheres.jpg)
+![Chrome and gold spheres reflecting the room](docs/readme/chrome_gold.jpg)
 
 ![The dark room: Godot alone and with radiance cascades](docs/readme/dark_room.jpg)
 
