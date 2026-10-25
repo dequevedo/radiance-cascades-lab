@@ -743,3 +743,31 @@ edge every frame).
   so its slowly changing colour lights the dark room at once. The cross-fade never flashes.
 - Cost not measured: the lab window was open on the same GPU during these runs (Godot alone measured 6.7 ms instead of 1.7 ms).
   The near-field pass, where the reflections were added, measured the same as before (0.36 ms).
+
+
+---
+
+# Step 12: one rule for every wall
+
+The walls had been placed piece by piece, each with its own sizes: 30 cm walls in the store and 25 cm in the corridor, a store
+ceiling slab that hung 15 cm below the ceiling height (the fluorescent fixtures were buried in it), tile bands stuck 4 cm out of
+the walls, corners owned by two walls at once, and a door in the corridor cut by skipping 20 cm slices of the wall mesh, so its
+edges did not line up with the lintel above it and the hollow wall showed through the gap.
+
+The building is now declared as rooms and openings and painted on a 5 cm grid (`room()`, `opening()`, `passage()`,
+`build_plan()` in `src/shop_scene.gd`):
+
+1. every wall of every room, 30 cm thick, from the underside of the floor slab to the top of the ceiling slab;
+2. each room repaints the inner half of its walls, so a wall between two rooms has each room's colour on its own side;
+3. the tile band is a 5 cm strip of the wall itself, flush with it;
+4. floor and ceiling slabs fill the inside of every room, at the same heights everywhere;
+5. openings are cut through what is there, so jambs, sill and lintel come out of the wall.
+
+Each maximal rectangle of equal grid cells becomes one box per solid layer, so boxes never overlap. The bend of the corridor
+sweeps the same cross-section round the quarter circle with smooth curved faces and meets the straight runs face to face. The
+dark room now stops one wall short of the corridor, so the bend never grazes its wall.
+
+`--buildtest` checks it: every pair of box faces that point the same way, lie in the same plane and overlap (what z-fights),
+and every pair of overlapping building boxes, then photographs the joints. Before: **242** coplanar overlapping face pairs (most
+in the props: shelves as wide as their uprights, the sofa's back and seat). After: **0**, and 0 overlapping building boxes
+(68 boxes for the whole building).

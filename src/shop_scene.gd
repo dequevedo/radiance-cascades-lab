@@ -7,33 +7,41 @@ extends RefCounted
 ## Everything static goes under main.static_root (voxelized once), everything that moves under main.dyn_root
 ## (voxelized every frame as boxes).
 
+## One set of rules for the whole building: every wall is WALL thick and runs from the underside of the floor slab
+## (FLOOR_Y) to the top of the ceiling slab (ROOF_Y); every floor slab tops out at 0 and every ceiling slab starts at CEIL; every
+## coordinate is a multiple of CELL. The plan is painted on a CELL grid and turned into boxes that never overlap (see room()).
 const ROOM_X := 7.0
 const ROOM_Z := 4.75
 const CEIL := 3.4
 const WALL := 0.3
+const FLOOR_Y := -0.3
+const ROOF_Y := CEIL + 0.3
+const BAND_H := 1.2 # the tiled band on the lower part of the store's walls
+const CELL := 0.05
 
 # The curved corridor leaves through an opening in the left wall (centred on z = COR_Z, 3 m wide), runs 6 m west, turns
 # left (towards +z) on a 5 m radius, and runs 8 m. No lamp inside: whatever light is in there got in from the store.
 const COR_Z := 0.3
 const COR_W := 3.0
-const COR_H := 3.4
-const COR_T := 0.25
 const COR_A := 6.0
 const COR_R := 5.0
 const COR_B := 8.0
 
 # A door in the corridor's right wall (between these distances from the opening) leads to two rooms south of it: a materials
-# room (glass, metal, glossy and rough spheres, one lamp) and, through it, a dark room lit only by a television.
+# room (glass, metal, glossy and rough spheres, one lamp) and, through it, a dark room lit only by a television. The rooms
+# line up with the store's back wall; the dark room stops one wall short of the corridor, so the bend never grazes its wall.
 const DOOR_S0 := 2.7
 const DOOR_S1 := 3.9
-const ROOMS_X0 := -18.5 # west end of the two rooms (outer face)
-const ROOMS_Z0 := -5.0 # south wall, outer face
-const ROOMS_Z1 := -1.45 # the corridor's right wall, outer face
-const DIVIDER_X := -12.875 # the wall between the two rooms
+const DIVIDER_X := -13.0 # west face of the wall between the two rooms
+const DARK_X0 := -18.5 # west end of the dark room (inside)
+const MAT_Z1 := COR_Z - COR_W * 0.5 - WALL # north end of the materials room: the corridor's wall
+const DARK_Z1 := MAT_Z1 - WALL
 
-# The GI volume that holds the store and the corridor (world metres).
+# The GI volume that holds the store and the corridor (world metres). The plan grid covers the same area.
 const VOLUME_MIN := Vector3(-20.5, -0.5, -5.25)
 const VOLUME_SIZE := Vector3(28.0, 4.5, 19.25)
+const GRID_NX := 560
+const GRID_NZ := 385
 
 var main: Node3D
 var rng := RandomNumberGenerator.new()
@@ -55,6 +63,11 @@ var tv_screen: MeshInstance3D # the dark room's television: a moving (re-voxeliz
 var tv_animate := true
 var materials_lamp: OmniLight3D
 var materials_lamp_energy := 3.0
+# The plan: one profile id per grid cell; a profile is the list of solid [y0, y1, colour] intervals of that column.
+var _cells := PackedInt32Array()
+var _profiles: Array = [[]]
+var _profile_ids := {"[]": 0}
+var _rooms: Array = []
 
 
 ## The props, as boxes: [centre (pivot at the bottom centre, +z = front), size, colour, emission]. Sizes are real-world metres,
@@ -64,11 +77,11 @@ const KIT := {
 	"fluorescent_fixture": [[Vector3(0, 0.03, 0), Vector3(1.24, 0.06, 0.22), Color(0.85, 0.85, 0.82), 0.0],
 		[Vector3(0, -0.01, 0), Vector3(1.18, 0.03, 0.12), Color(0.85, 1.0, 0.9), -3.0]],
 	"shelf_metal": [[Vector3(0, 0.9, -0.2), Vector3(1.0, 1.8, 0.04), Color(0.72, 0.72, 0.7), 0.0],
-		[Vector3(0, 0.22, 0), Vector3(1.0, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
-		[Vector3(0, 0.636, 0), Vector3(1.0, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
-		[Vector3(0, 1.052, 0), Vector3(1.0, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
-		[Vector3(0, 1.468, 0), Vector3(1.0, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
-		[Vector3(0, 0.05, 0), Vector3(1.0, 0.1, 0.42), Color(0.4, 0.4, 0.4), 0.0]],
+		[Vector3(0, 0.22, 0), Vector3(0.96, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
+		[Vector3(0, 0.636, 0), Vector3(0.96, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
+		[Vector3(0, 1.052, 0), Vector3(0.96, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
+		[Vector3(0, 1.468, 0), Vector3(0.96, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
+		[Vector3(0, 0.05, 0), Vector3(0.98, 0.1, 0.42), Color(0.4, 0.4, 0.4), 0.0]],
 	"biscuit_pack": [[Vector3(0, 0.04, 0), Vector3(0.28, 0.08, 0.2), Color(0.85, 0.65, 0.3), 0.0]],
 	"rice_pack": [[Vector3(0, 0.125, 0), Vector3(0.18, 0.25, 0.08), Color(0.92, 0.9, 0.85), 0.0]],
 	"guarana_2l": [[Vector3(0, 0.165, 0), Vector3(0.1, 0.33, 0.1), Color(0.15, 0.55, 0.2), 0.0]],
@@ -182,25 +195,170 @@ func checker_floor(parent: Node, half_x: float, half_z: float, tile: float, c1: 
 	parent.add_child(mi)
 
 
-## The front wall: full height except over the window and door openings.
-func front_wall(parent: Node, z: float, color: Color) -> void:
-	var holes := [[-5.4, -3.4, 0.9, 2.4], [-2.2, -0.2, 0.9, 2.4], [3.4, 4.6, 0.0, 2.2]]
-	var xs := [-ROOM_X - WALL, -5.4, -3.4, -2.2, -0.2, 3.4, 4.6, ROOM_X + WALL]
-	for i in xs.size() - 1:
-		var x0: float = xs[i]
-		var x1: float = xs[i + 1]
-		var hole = null
-		for h in holes:
-			if absf(h[0] - x0) < 0.001 and absf(h[1] - x1) < 0.001:
-				hole = h
-		var cx := (x0 + x1) * 0.5
-		var w := x1 - x0
-		if hole == null:
-			box(parent, Vector3(cx, CEIL * 0.5, z), Vector3(w, CEIL, WALL), color)
+# --- the plan: walls, floors and ceilings --------------------------------------------------------------
+#
+# Rooms are declared with room(), openings with opening() and fill(); build_plan() then paints them on the grid in a fixed
+# order and emits one box per solid interval of every maximal rectangle of equal cells:
+#
+#   1. every wall of every room, WALL thick (a corner belongs to both walls, so nothing is left open);
+#   2. every room repaints the inner half of its own walls, so a wall between two rooms has each room's colour on its side;
+#   3. the band strip (CELL deep) on the walls of rooms that have one: flush with the wall, nothing stuck on it;
+#   4. the inside of every room: floor slab and ceiling slab;
+#   5. the openings, cut through whatever is there (jambs, sill and lintel come out of the wall itself).
+#
+# Boxes never overlap and neighbouring faces meet edge to edge, so nothing z-fights and nothing is left open.
+
+## A room: its inside (x0..x1, z0..z1), a colour per walled side ("n" = +z, "s" = -z, "e" = +x, "w" = -x; a side with no entry has
+## no wall of its own: open, or closed by another room's wall), floor and ceiling colours, and an optional band colour.
+func room(x0: float, z0: float, x1: float, z1: float, walls: Dictionary, floor_c: Color, ceil_c: Color, band: Variant = null,
+		floor_top := 0.0) -> void:
+	_rooms.append({"r": [x0, z0, x1, z1], "walls": walls, "floor": floor_c, "ceil": ceil_c, "band": band, "floor_top": floor_top})
+
+
+var _openings: Array = []
+
+
+## A hole through the walls in x0..x1, z0..z1 from y0 to y1. below / above recolour what is left under and over it (a sill, a
+## lintel); null keeps the wall's colour.
+func opening(x0: float, z0: float, x1: float, z1: float, y0: float, y1: float, below: Variant = null, above: Variant = null) -> void:
+	_openings.append(["cut", [x0, z0, x1, z1], y0, y1, below, above])
+
+
+## Replaces what is in x0..x1, z0..z1 with a plain floor and ceiling (a passage through a wall, full height).
+func passage(x0: float, z0: float, x1: float, z1: float, floor_c: Color, ceil_c: Color) -> void:
+	_openings.append(["fill", [x0, z0, x1, z1], [[FLOOR_Y, 0.0, floor_c], [CEIL, ROOF_Y, ceil_c]]])
+
+
+func _pid(intervals: Array) -> int:
+	var sorted := intervals.duplicate()
+	sorted.sort_custom(func(a, b): return a[0] < b[0])
+	var out: Array = []
+	for iv in sorted:
+		if iv[1] - iv[0] < 0.001:
+			continue
+		if not out.is_empty() and absf(out[-1][1] - iv[0]) < 0.001 and out[-1][2] == iv[2]:
+			out[-1] = [out[-1][0], iv[1], iv[2]]
 		else:
-			if hole[2] > 0.0:
-				box(parent, Vector3(cx, hole[2] * 0.5, z), Vector3(w, hole[2], WALL), color)
-			box(parent, Vector3(cx, (hole[3] + CEIL) * 0.5, z), Vector3(w, CEIL - hole[3], WALL), color)
+			out.append(iv)
+	var key := str(out)
+	if not _profile_ids.has(key):
+		_profile_ids[key] = _profiles.size()
+		_profiles.append(out)
+	return _profile_ids[key]
+
+
+func _cell_range(r: Array) -> Array:
+	var i0 := roundi((r[0] - VOLUME_MIN.x) / CELL)
+	var i1 := roundi((r[2] - VOLUME_MIN.x) / CELL)
+	var j0 := roundi((r[1] - VOLUME_MIN.z) / CELL)
+	var j1 := roundi((r[3] - VOLUME_MIN.z) / CELL)
+	assert(i0 >= 0 and j0 >= 0 and i1 <= GRID_NX and j1 <= GRID_NZ, "plan rectangle outside the grid: %s" % [r])
+	return [i0, j0, i1, j1]
+
+
+func _fill(r: Array, pid: int) -> void:
+	var c := _cell_range(r)
+	for j in range(c[1], c[3]):
+		for i in range(c[0], c[2]):
+			_cells[j * GRID_NX + i] = pid
+
+
+func _cut(r: Array, y0: float, y1: float, below: Variant, above: Variant) -> void:
+	var c := _cell_range(r)
+	var memo := {}
+	for j in range(c[1], c[3]):
+		for i in range(c[0], c[2]):
+			var k := j * GRID_NX + i
+			var p := _cells[k]
+			if not memo.has(p):
+				var out: Array = []
+				for iv in _profiles[p]:
+					if iv[1] <= y0 or iv[0] >= y1:
+						out.append(iv)
+						continue
+					if iv[0] < y0:
+						out.append([iv[0], y0, below if below != null else iv[2]])
+					if iv[1] > y1:
+						out.append([y1, iv[1], above if above != null else iv[2]])
+				memo[p] = _pid(out)
+			_cells[k] = memo[p]
+
+
+## The strip of a room's side `side` that is t deep into the wall, reaching into the corners where the next side has a wall too.
+func _side_rect(rm: Dictionary, side: String, t: float) -> Array:
+	var r: Array = rm["r"]
+	var w: Dictionary = rm["walls"]
+	var xw := t if w.has("w") else 0.0
+	var xe := t if w.has("e") else 0.0
+	var zs := t if w.has("s") else 0.0
+	var zn := t if w.has("n") else 0.0
+	match side:
+		"s":
+			return [r[0] - xw, r[1] - t, r[2] + xe, r[1]]
+		"n":
+			return [r[0] - xw, r[3], r[2] + xe, r[3] + t]
+		"w":
+			return [r[0] - t, r[1] - zs, r[0], r[3] + zn]
+		_:
+			return [r[2], r[1] - zs, r[2] + t, r[3] + zn]
+
+
+func build_plan(parent: Node) -> void:
+	_cells.resize(GRID_NX * GRID_NZ)
+	_cells.fill(0)
+	for rm in _rooms:
+		for side in rm["walls"]:
+			_fill(_side_rect(rm, side, WALL), _pid([[FLOOR_Y, ROOF_Y, rm["walls"][side]]]))
+	for rm in _rooms:
+		for side in rm["walls"]:
+			_fill(_side_rect(rm, side, WALL * 0.5), _pid([[FLOOR_Y, ROOF_Y, rm["walls"][side]]]))
+	for rm in _rooms:
+		if rm["band"] != null:
+			for side in rm["walls"]:
+				_fill(_side_rect(rm, side, CELL), _pid([[FLOOR_Y, BAND_H, rm["band"]], [BAND_H, ROOF_Y, rm["walls"][side]]]))
+	for rm in _rooms:
+		_fill(rm["r"], _pid([[FLOOR_Y, rm["floor_top"], rm["floor"]], [CEIL, ROOF_Y, rm["ceil"]]]))
+	for op in _openings:
+		if op[0] == "cut":
+			_cut(op[1], op[2], op[3], op[4], op[5])
+		else:
+			_fill(op[1], _pid(op[2]))
+	# Maximal rectangles of equal cells (greedy: grow along x, then along z), one box per solid interval.
+	var used := PackedByteArray()
+	used.resize(_cells.size())
+	var n := 0
+	for j in GRID_NZ:
+		for i in GRID_NX:
+			var k := j * GRID_NX + i
+			var p := _cells[k]
+			if p == 0 or used[k] == 1:
+				continue
+			var i1 := i + 1
+			while i1 < GRID_NX and _cells[j * GRID_NX + i1] == p and used[j * GRID_NX + i1] == 0:
+				i1 += 1
+			var j1 := j + 1
+			while j1 < GRID_NZ:
+				var row_ok := true
+				for ii in range(i, i1):
+					if _cells[j1 * GRID_NX + ii] != p or used[j1 * GRID_NX + ii] == 1:
+						row_ok = false
+						break
+				if not row_ok:
+					break
+				j1 += 1
+			for jj in range(j, j1):
+				for ii in range(i, i1):
+					used[jj * GRID_NX + ii] = 1
+			var x0 := VOLUME_MIN.x + i * CELL
+			var x1 := VOLUME_MIN.x + i1 * CELL
+			var z0 := VOLUME_MIN.z + j * CELL
+			var z1 := VOLUME_MIN.z + j1 * CELL
+			for iv in _profiles[p]:
+				var b := box(parent, Vector3((x0 + x1) * 0.5, (iv[0] + iv[1]) * 0.5, (z0 + z1) * 0.5),
+					Vector3(x1 - x0, iv[1] - iv[0], z1 - z0), iv[2])
+				b.name = "Plan%d" % n
+				b.set_meta("arch", true)
+				n += 1
 
 
 func ceiling_light(parent: Node, pos: Vector3, shadows := true) -> OmniLight3D:
@@ -244,24 +402,20 @@ func build(m: Node3D) -> void:
 	var paint := Color(0.66, 0.74, 0.62)
 	var cream := Color(0.82, 0.78, 0.66)
 
-	# Shell. The floor slab is solid for the voxels; the checker sits on top of it.
-	box(S, Vector3(0, -0.255, 0), Vector3(ROOM_X * 2 + 0.6, 0.49, ROOM_Z * 2 + 0.6), Color(0.5, 0.47, 0.4))
-	checker_floor(S, ROOM_X, ROOM_Z, 0.5, Color(0.66, 0.62, 0.5), Color(0.38, 0.34, 0.28))
-	box(S, Vector3(0, CEIL + 0.15, 0), Vector3(ROOM_X * 2 + 0.6, 0.3, ROOM_Z * 2 + 0.6), cream)
-	var z_lo := COR_Z - COR_W * 0.5 # opening edges
-	var z_hi := COR_Z + COR_W * 0.5
-	var zs0 := -ROOM_Z - WALL
-	var zs1 := ROOM_Z + WALL
-	box(S, Vector3(-ROOM_X - WALL * 0.5, CEIL * 0.5, (zs0 + z_lo) * 0.5), Vector3(WALL, CEIL, z_lo - zs0), paint)
-	box(S, Vector3(-ROOM_X - WALL * 0.5, CEIL * 0.5, (z_hi + zs1) * 0.5), Vector3(WALL, CEIL, zs1 - z_hi), paint)
-	box(S, Vector3(ROOM_X + WALL * 0.5, CEIL * 0.5, 0), Vector3(WALL, CEIL, ROOM_Z * 2 + 0.6), paint)
-	box(S, Vector3(0, CEIL * 0.5, -ROOM_Z - WALL * 0.5), Vector3(ROOM_X * 2 + 0.6, CEIL, WALL), paint)
-	front_wall(S, ROOM_Z + WALL * 0.5, paint)
-	# A darker band on the lower part of the walls (tiles).
-	box(S, Vector3(-ROOM_X + 0.02, 0.6, (-ROOM_Z + z_lo) * 0.5), Vector3(0.04, 1.2, z_lo + ROOM_Z), Color(0.32, 0.45, 0.4))
-	box(S, Vector3(-ROOM_X + 0.02, 0.6, (z_hi + ROOM_Z) * 0.5), Vector3(0.04, 1.2, ROOM_Z - z_hi), Color(0.32, 0.45, 0.4))
-	box(S, Vector3(ROOM_X - 0.02, 0.6, 0), Vector3(0.04, 1.2, ROOM_Z * 2), Color(0.32, 0.45, 0.4))
-	box(S, Vector3(0, 0.6, -ROOM_Z + 0.02), Vector3(ROOM_X * 2, 1.2, 0.04), Color(0.32, 0.45, 0.4))
+	# The building. The store's floor slab stops 2 cm short of the top: the checker floor is the surface there.
+	var walls := Node3D.new()
+	walls.name = "Building"
+	S.add_child(walls)
+	var slab := Color(0.5, 0.47, 0.4)
+	plan_corridor_and_rooms() # first: the store's walls are painted last, so its colour wins at the jambs of its passage
+	room(-ROOM_X, -ROOM_Z, ROOM_X, ROOM_Z, {"n": paint, "s": paint, "e": paint, "w": paint}, slab, cream,
+		Color(0.32, 0.45, 0.4), -0.02)
+	checker_floor(walls, ROOM_X, ROOM_Z, 0.5, Color(0.66, 0.62, 0.5), Color(0.38, 0.34, 0.28))
+	opening(-5.4, ROOM_Z, -3.4, ROOM_Z + WALL, 0.9, 2.4) # windows
+	opening(-2.2, ROOM_Z, -0.2, ROOM_Z + WALL, 0.9, 2.4)
+	opening(3.4, ROOM_Z, 4.6, ROOM_Z + WALL, 0.0, 2.2, slab) # the street door
+	build_plan(walls)
+	build_bend(walls)
 
 	# Lights: six ceiling fluorescents and a sodium street lamp outside the windows.
 	var xs := [-4.5, 0.0, 4.5]
@@ -352,9 +506,9 @@ func build(m: Node3D) -> void:
 	var wood := Color(0.55, 0.4, 0.25)
 	var board := box(dolly, Vector3(0, 0.12, 0), Vector3(0.9, 0.08, 0.6), wood)
 	board.name = "DollyBoard"
-	box(dolly, Vector3(-0.2, 0.16 + 0.17, 0.0), Vector3(0.4, 0.34, 0.33), Color(0.62, 0.5, 0.32))
-	box(dolly, Vector3(-0.2, 0.5 + 0.17, 0.0), Vector3(0.4, 0.34, 0.33), Color(0.62, 0.5, 0.32))
-	box(dolly, Vector3(0.25, 0.16 + 0.24, 0.0), Vector3(0.67, 0.48, 0.44), Color(0.85, 0.85, 0.82))
+	box(dolly, Vector3(-0.25, 0.16 + 0.17, 0.0), Vector3(0.4, 0.34, 0.33), Color(0.62, 0.5, 0.32))
+	box(dolly, Vector3(-0.25, 0.5 + 0.17, 0.0), Vector3(0.4, 0.34, 0.33), Color(0.62, 0.5, 0.32))
+	box(dolly, Vector3(0.3, 0.16 + 0.24, 0.0), Vector3(0.67, 0.48, 0.44), Color(0.85, 0.85, 0.82))
 	dolly_lamp = OmniLight3D.new()
 	dolly_lamp.position = Vector3(0, 1.7, 0)
 	dolly_lamp.light_color = Color(1.0, 0.85, 0.6)
@@ -433,29 +587,97 @@ func sphere(parent: Node, pos: Vector3, radius: float, color: Color, metallic: f
 	return mi
 
 
-func build_rooms(S: Node3D, D: Node3D) -> void:
-	var x0 := ROOMS_X0
-	var x1 := -ROOM_X - WALL # the store's left wall closes them on the east
-	var cx := (x0 + x1) * 0.5
-	var cz := (ROOMS_Z0 + ROOMS_Z1) * 0.5
-	var wx := x1 - x0
-	var wz := ROOMS_Z1 - ROOMS_Z0
-	var grey := Color(0.72, 0.72, 0.7)
-	box(S, Vector3(cx, -0.125, cz), Vector3(wx, 0.25, wz), Color(0.42, 0.42, 0.42)) # floor
-	box(S, Vector3(cx, CEIL + 0.125, cz), Vector3(wx, 0.25, wz), Color(0.6, 0.6, 0.58)) # ceiling
-	box(S, Vector3(cx, CEIL * 0.5, ROOMS_Z0 + 0.125), Vector3(wx, CEIL, 0.25), grey) # south wall
-	box(S, Vector3(x0 + 0.125, CEIL * 0.5, cz), Vector3(0.25, CEIL, wz), grey) # west wall
-	# North wall of the dark room (the corridor bends away from it there).
-	var nx1 := -ROOM_X - COR_A
-	box(S, Vector3((x0 + nx1) * 0.5, CEIL * 0.5, ROOMS_Z1 + 0.125), Vector3(nx1 - x0, CEIL, 0.25), grey)
-	# The wall between the rooms, with a door near the south wall (so little of the materials room's light gets in).
-	var dz0 := ROOMS_Z0 + 0.25 + 0.15
-	var dz1 := dz0 + 0.9
-	var blue := Color(0.25, 0.35, 0.7)
-	box(S, Vector3(DIVIDER_X, CEIL * 0.5, (dz1 + ROOMS_Z1) * 0.5), Vector3(0.25, CEIL, ROOMS_Z1 - dz1), blue)
-	box(S, Vector3(DIVIDER_X, CEIL * 0.5, (ROOMS_Z0 + 0.25 + dz0) * 0.5), Vector3(0.25, CEIL, dz0 - ROOMS_Z0 - 0.25), blue)
-	box(S, Vector3(DIVIDER_X, (2.1 + CEIL) * 0.5, (dz0 + dz1) * 0.5), Vector3(0.25, CEIL - 2.1, dz1 - dz0), blue)
+const COR_FLOOR := Color(0.45, 0.42, 0.38)
+const COR_CEIL := Color(0.72, 0.72, 0.7)
+const COR_RIGHT := Color(0.78, 0.3, 0.24) # the outside of the turn
+const COR_LEFT := Color(0.2, 0.52, 0.56) # the inside of the turn
 
+
+## The two straight runs of the corridor, the two rooms south of it, and their doors (the bend is build_bend()).
+func plan_corridor_and_rooms() -> void:
+	var grey := Color(0.72, 0.72, 0.7)
+	var blue := Color(0.25, 0.35, 0.7)
+	var room_floor := Color(0.42, 0.42, 0.42)
+	var room_ceil := Color(0.6, 0.6, 0.58)
+	var hw := COR_W * 0.5
+	var x_bend := -ROOM_X - COR_A
+	room(DIVIDER_X + WALL, -ROOM_Z, -ROOM_X - WALL, MAT_Z1, {"s": grey, "w": blue, "n": grey, "e": grey}, room_floor, room_ceil)
+	room(DARK_X0, -ROOM_Z, DIVIDER_X, DARK_Z1, {"s": grey, "w": grey, "n": grey, "e": blue}, room_floor, room_ceil)
+	# First run: from the store's wall to the bend. Second run: from the bend to the closed far end.
+	room(x_bend, COR_Z - hw, -ROOM_X - WALL, COR_Z + hw, {"s": COR_RIGHT, "n": COR_LEFT}, COR_FLOOR, COR_CEIL)
+	var xc := x_bend - COR_R
+	room(xc - hw, COR_Z + COR_R, xc + hw, COR_Z + COR_R + COR_B, {"w": COR_RIGHT, "e": COR_LEFT, "n": Color(0.6, 0.6, 0.58)},
+		COR_FLOOR, COR_CEIL)
+	passage(-ROOM_X - WALL, COR_Z - hw, -ROOM_X, COR_Z + hw, COR_FLOOR, COR_CEIL) # through the store's left wall
+	opening(-ROOM_X - DOOR_S1, MAT_Z1, -ROOM_X - DOOR_S0, MAT_Z1 + WALL, 0.0, 2.2, room_floor) # corridor -> materials room
+	# Between the rooms, near the south wall (so little of the materials room's light gets into the dark room).
+	opening(DIVIDER_X, -ROOM_Z + 0.15, DIVIDER_X + WALL, -ROOM_Z + 1.05, 0.0, 2.1, room_floor)
+
+
+## The bend: the corridor's cross-section (the same walls, floor and ceiling as the straight runs) swept round a quarter
+## circle, with smooth curved faces. Its two ends meet the straight runs face to face.
+func build_bend(parent: Node) -> void:
+	var hw := COR_W * 0.5
+	var columns := [
+		[-hw - WALL, -hw, [[FLOOR_Y, ROOF_Y, COR_LEFT]]],
+		[-hw, hw, [[FLOOR_Y, 0.0, COR_FLOOR], [CEIL, ROOF_Y, COR_CEIL]]],
+		[hw, hw + WALL, [[FLOOR_Y, ROOF_Y, COR_RIGHT]]]]
+	var centre := Vector3(-ROOM_X - COR_A, 0.0, COR_Z + COR_R)
+	var segs := 64
+	var surf := {} # colour -> [verts, normals, indices]
+	for col in columns:
+		var ra: float = COR_R + col[0]
+		var rb: float = COR_R + col[1]
+		for iv in col[2]:
+			var y0: float = iv[0]
+			var y1: float = iv[1]
+			if not surf.has(iv[2]):
+				surf[iv[2]] = [PackedVector3Array(), PackedVector3Array(), PackedInt32Array()]
+			var s: Array = surf[iv[2]]
+			for k in segs:
+				var t0 := PI * 0.5 * k / segs
+				var t1 := PI * 0.5 * (k + 1) / segs
+				var d0 := Vector3(-sin(t0), 0.0, -cos(t0)) # outwards from the centre of the bend
+				var d1 := Vector3(-sin(t1), 0.0, -cos(t1))
+				var y0v := Vector3(0, y0, 0)
+				var y1v := Vector3(0, y1, 0)
+				_quad(s, [centre + d0 * rb + y0v, centre + d1 * rb + y0v, centre + d1 * rb + y1v, centre + d0 * rb + y1v], [d0, d1, d1, d0])
+				_quad(s, [centre + d0 * ra + y0v, centre + d1 * ra + y0v, centre + d1 * ra + y1v, centre + d0 * ra + y1v], [-d0, -d1, -d1, -d0])
+				_quad(s, [centre + d0 * ra + y1v, centre + d1 * ra + y1v, centre + d1 * rb + y1v, centre + d0 * rb + y1v], [Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP])
+				_quad(s, [centre + d0 * ra + y0v, centre + d1 * ra + y0v, centre + d1 * rb + y0v, centre + d0 * rb + y0v], [Vector3.DOWN, Vector3.DOWN, Vector3.DOWN, Vector3.DOWN])
+	for color in surf:
+		var arrays := []
+		arrays.resize(Mesh.ARRAY_MAX)
+		arrays[Mesh.ARRAY_VERTEX] = surf[color][0]
+		arrays[Mesh.ARRAY_NORMAL] = surf[color][1]
+		arrays[Mesh.ARRAY_INDEX] = surf[color][2]
+		var mesh := ArrayMesh.new()
+		mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+		var mi := MeshInstance3D.new()
+		mi.mesh = mesh
+		mi.name = "Bend"
+		var mat := StandardMaterial3D.new()
+		mat.albedo_color = color
+		mat.roughness = 0.95
+		mi.material_override = mat
+		parent.add_child(mi)
+
+
+## Appends a quad (4 corners in order round it) facing along its vertex normals. Godot treats clockwise triangles as front faces.
+func _quad(s: Array, v: Array, nrm: Array) -> void:
+	var base: int = s[0].size()
+	for k in 4:
+		s[0].append(v[k])
+		s[1].append(nrm[k])
+	var face_n: Vector3 = nrm[0] + nrm[1] + nrm[2] + nrm[3]
+	var tri_n: Vector3 = (v[1] - v[0]).cross(v[2] - v[0])
+	if tri_n.dot(face_n) < 0.0:
+		s[2].append_array([base, base + 1, base + 2, base, base + 2, base + 3])
+	else:
+		s[2].append_array([base, base + 2, base + 1, base, base + 3, base + 2])
+
+
+func build_rooms(S: Node3D, D: Node3D) -> void:
 	# --- Materials room: one lamp; spheres of chrome, gold, glossy plastic and rough plaster; a glass pane; a copper box.
 	prop(S, "electronics/fluorescent_fixture", Vector3(-10.0, CEIL - 0.06, -3.1))
 	materials_lamp = OmniLight3D.new()
@@ -491,7 +713,7 @@ func build_rooms(S: Node3D, D: Node3D) -> void:
 	# --- Dark room: no lamp. A television on a stand, a sofa facing it, a rug and a low table.
 	box(S, Vector3(-17.9, 0.25, -3.1), Vector3(0.5, 0.5, 0.9), Color(0.35, 0.25, 0.18)) # stand
 	box(S, Vector3(-17.85, 0.76, -3.1), Vector3(0.45, 0.52, 0.66), Color(0.12, 0.12, 0.12)) # television body
-	box(S, Vector3(-14.4, 0.225, -3.1), Vector3(0.9, 0.45, 2.0), Color(0.72, 0.64, 0.52)) # sofa seat
+	box(S, Vector3(-14.4, 0.225, -3.1), Vector3(0.9, 0.45, 1.9), Color(0.72, 0.64, 0.52)) # sofa seat
 	box(S, Vector3(-13.95, 0.7, -3.1), Vector3(0.25, 0.55, 2.0), Color(0.72, 0.64, 0.52)) # sofa back
 	box(S, Vector3(-16.0, 0.01, -3.1), Vector3(2.4, 0.02, 1.6), Color(0.45, 0.15, 0.12)) # rug
 	box(S, Vector3(-15.6, 0.2, -3.1), Vector3(0.5, 0.4, 0.9), Color(0.5, 0.36, 0.22)) # low table
@@ -521,82 +743,18 @@ func cor_path(s: float) -> Array:
 	return [Vector3(-ROOM_X - COR_A - COR_R, 0, COR_Z + COR_R + s), Vector3(0, 0, 1)]
 
 
-## One mesh per surface, built slice by slice so the bend is smooth (an inner face to see and an outer one 0.25 m behind it, so the
-## walls are solid for the voxels). Godot treats clockwise triangles as front faces.
-func cor_strip(parent: Node, color: Color, parts: Array) -> void:
-	var total := COR_A + COR_R * PI * 0.5 + COR_B
-	var n := int(ceil(total / 0.2))
-	var verts := PackedVector3Array()
-	var norms := PackedVector3Array()
-	var idx := PackedInt32Array()
-	for part in parts:
-		for i in n:
-			var s_mid := total * (i + 0.5) / n
-			if part.has("hole") and s_mid > part["hole"][0] and s_mid < part["hole"][1]:
-				continue # a door through this wall
-			var q := []
-			for sd in [total * i / n, total * (i + 1) / n]:
-				var pth := cor_path(sd)
-				var c: Vector3 = pth[0]
-				var r: Vector3 = (pth[1] as Vector3).cross(Vector3.UP)
-				q.append([part["e0"].call(c, r), part["e1"].call(c, r), part["n"].call(r)])
-			var base := verts.size()
-			verts.append_array([q[0][0], q[0][1], q[1][1], q[1][0]])
-			norms.append_array([q[0][2], q[0][2], q[1][2], q[1][2]])
-			var face_n: Vector3 = ((q[0][2] as Vector3) + (q[1][2] as Vector3)).normalized()
-			var tri_n := (verts[base + 1] - verts[base]).cross(verts[base + 2] - verts[base])
-			if tri_n.dot(face_n) < 0.0:
-				idx.append_array([base, base + 1, base + 2, base, base + 2, base + 3])
-			else:
-				idx.append_array([base, base + 2, base + 1, base, base + 3, base + 2])
-	var arrays := []
-	arrays.resize(Mesh.ARRAY_MAX)
-	arrays[Mesh.ARRAY_VERTEX] = verts
-	arrays[Mesh.ARRAY_NORMAL] = norms
-	arrays[Mesh.ARRAY_INDEX] = idx
-	var mesh := ArrayMesh.new()
-	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-	var mi := MeshInstance3D.new()
-	mi.mesh = mesh
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = color
-	mat.roughness = 1.0
-	mi.material_override = mat
-	parent.add_child(mi)
-
-
+## The corridor's fittings (its walls, floor and ceiling are part of the plan and the bend).
 func build_corridor(parent: Node) -> void:
 	var hw := COR_W * 0.5
-	var t := COR_T
 	var up := Vector3.UP
-	var h := COR_H
-	cor_strip(parent, Color(0.45, 0.42, 0.38), [
-		{"e0": func(c, r): return c - r * hw, "e1": func(c, r): return c + r * hw, "n": func(_r): return up},
-		{"e0": func(c, r): return c - r * (hw + t) - up * t, "e1": func(c, r): return c + r * (hw + t) - up * t, "n": func(_r): return -up}])
-	cor_strip(parent, Color(0.72, 0.72, 0.7), [
-		{"e0": func(c, r): return c - r * hw + up * h, "e1": func(c, r): return c + r * hw + up * h, "n": func(_r): return -up},
-		{"e0": func(c, r): return c - r * (hw + t) + up * (h + t), "e1": func(c, r): return c + r * (hw + t) + up * (h + t), "n": func(_r): return up}])
-	cor_strip(parent, Color(0.78, 0.3, 0.24), [ # right wall: the outside of the left turn (with the door to the rooms)
-		{"e0": func(c, r): return c + r * hw, "e1": func(c, r): return c + r * hw + up * h, "n": func(r): return -r, "hole": [DOOR_S0, DOOR_S1]},
-		{"e0": func(c, r): return c + r * (hw + t) - up * t, "e1": func(c, r): return c + r * (hw + t) + up * (h + t), "n": func(r): return r, "hole": [DOOR_S0, DOOR_S1]}])
-	# Above the door.
-	var door_c: Vector3 = cor_path((DOOR_S0 + DOOR_S1) * 0.5)[0]
-	box(parent, Vector3(door_c.x, (2.2 + h + t) * 0.5, door_c.z - hw - t * 0.5), Vector3(DOOR_S1 - DOOR_S0, h + t - 2.2, t), Color(0.78, 0.3, 0.24))
-	cor_strip(parent, Color(0.2, 0.52, 0.56), [ # left wall: the inside of the turn
-		{"e0": func(c, r): return c - r * hw, "e1": func(c, r): return c - r * hw + up * h, "n": func(r): return r},
-		{"e0": func(c, r): return c - r * (hw + t) - up * t, "e1": func(c, r): return c - r * (hw + t) + up * (h + t), "n": func(r): return -r}])
 	# A neon sign near the far end, the only light of that part of the corridor: it lights its surroundings through the bounce alone.
 	var ns := COR_A + COR_R * PI * 0.5 + COR_B - 2.0
 	var np := cor_path(ns)
 	var nr: Vector3 = (np[1] as Vector3).cross(Vector3.UP)
-	var neon := box(parent, (np[0] as Vector3) - nr * (hw - 0.04) + up * 2.2, Vector3(0.05, 0.12, 1.2), Color(1.0, 0.25, 0.6),
+	var neon := box(parent, (np[0] as Vector3) - nr * (hw - 0.025) + up * 2.2, Vector3(0.05, 0.12, 1.2), Color(1.0, 0.25, 0.6),
 		atan2(-(np[1] as Vector3).x, -(np[1] as Vector3).z))
 	var nm := neon.material_override as StandardMaterial3D
 	nm.emission_enabled = true
 	nm.emission = Color(1.0, 0.25, 0.6)
 	nm.emission_energy_multiplier = 4.0
 	neon.name = "NeonSign"
-	# Closed at the far end, so nothing leaks out of it.
-	var e := cor_path(COR_A + COR_R * PI * 0.5 + COR_B)
-	var eh: Vector3 = e[1]
-	box(parent, (e[0] as Vector3) + eh * 0.15 + Vector3(0, COR_H * 0.5, 0), Vector3(COR_W + 2 * COR_T, COR_H + 2 * COR_T, 0.3), Color(0.6, 0.6, 0.58), atan2(-eh.x, -eh.z))

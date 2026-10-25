@@ -172,6 +172,90 @@ func _pose(name: String) -> void:
 	cam.look_at(p[1])
 
 
+## Close views of where walls, floors and ceilings meet (doors, openings, corners, the start of the bend).
+const BUILD_VIEWS := {
+	"door_from_corridor": [Vector3(-8.6, 1.6, 1.3), Vector3(-10.3, 1.1, -1.4)],
+	"door_from_room": [Vector3(-8.8, 1.5, -3.9), Vector3(-10.3, 1.5, -1.3)],
+	"store_opening": [Vector3(-4.8, 1.6, -2.6), Vector3(-7.2, 1.4, 0.3)],
+	"corridor_bend_start": [Vector3(-8.5, 2.2, 1.5), Vector3(-14.5, 1.5, -0.6)],
+	"divider_door": [Vector3(-9.2, 1.4, -2.0), Vector3(-12.9, 1.0, -4.2)],
+	"dark_room_corner": [Vector3(-15.0, 1.4, -4.2), Vector3(-18.5, 2.8, -1.6)],
+	"store_corner": [Vector3(3.0, 1.8, 1.5), Vector3(7.0, 2.6, -4.75)],
+	"front_wall": [Vector3(0.0, 1.6, 1.0), Vector3(2.0, 1.4, 5.0)],
+}
+
+
+## Geometry check: every pair of box faces that point the same way, lie in the same plane and overlap (what z-fights), plus
+## the architecture boxes that overlap each other. Then close views of the joints.
+func _build_test(report: PackedStringArray) -> void:
+	var faces := {} # bucket (normal, plane) -> [[centre, u axis, v axis, half u, half v, name]]
+	var arch: Array = []
+	var stack: Array[Node] = [static_root, dyn_root]
+	var n_boxes := 0
+	while not stack.is_empty():
+		var node: Node = stack.pop_back()
+		stack.append_array(node.get_children())
+		var mi := node as MeshInstance3D
+		if mi == null or not (mi.mesh is BoxMesh) or not mi.visible:
+			continue
+		n_boxes += 1
+		var xf := mi.global_transform
+		var h := (mi.mesh as BoxMesh).size * 0.5
+		var axes := [xf.basis.x.normalized(), xf.basis.y.normalized(), xf.basis.z.normalized()]
+		var hs := [h.x, h.y, h.z]
+		if mi.has_meta("arch"):
+			arch.append([xf.origin, h, mi.name])
+		for k in 3:
+			for sgn in [-1.0, 1.0]:
+				var nrm: Vector3 = axes[k] * sgn
+				var c: Vector3 = xf.origin + nrm * hs[k]
+				if nrm.y < -0.999 and c.y < 0.001:
+					continue # an underside standing on the floor: never seen
+				var key := "%d,%d,%d|%d" % [roundi(nrm.x * 1000), roundi(nrm.y * 1000), roundi(nrm.z * 1000), roundi(nrm.dot(c) * 1000)]
+				if not faces.has(key):
+					faces[key] = []
+				faces[key].append([c, axes[(k + 1) % 3], axes[(k + 2) % 3], hs[(k + 1) % 3], hs[(k + 2) % 3], str(mi.get_parent().name) + "/" + str(mi.name)])
+	var fights := 0
+	for key in faces:
+		var list: Array = faces[key]
+		for i in list.size():
+			for j in range(i + 1, list.size()):
+				var a: Array = list[i]
+				var b: Array = list[j]
+				var d: Vector3 = b[0] - a[0]
+				# Separating axes in the plane: the two in-plane axes of each face.
+				var sep := false
+				for ax in [a[1], a[2], b[1], b[2]]:
+					var ra: float = a[3] * absf((a[1] as Vector3).dot(ax)) + a[4] * absf((a[2] as Vector3).dot(ax))
+					var rb: float = b[3] * absf((b[1] as Vector3).dot(ax)) + b[4] * absf((b[2] as Vector3).dot(ax))
+					if absf(d.dot(ax)) >= ra + rb - 0.001:
+						sep = true
+						break
+				if not sep:
+					fights += 1
+					if fights <= 40:
+						report.append("  z-fight: %s  x  %s  (plane %s)" % [a[5], b[5], key])
+	var overlaps := 0
+	for i in arch.size():
+		for j in range(i + 1, arch.size()):
+			var d: Vector3 = (arch[j][0] - arch[i][0]).abs()
+			var s: Vector3 = arch[i][1] + arch[j][1]
+			if d.x < s.x - 0.001 and d.y < s.y - 0.001 and d.z < s.z - 0.001:
+				overlaps += 1
+				if overlaps <= 20:
+					report.append("  overlap: %s  x  %s" % [arch[i][2], arch[j][2]])
+	report.append("buildtest: %d boxes (%d architecture), %d coplanar overlapping face pairs, %d overlapping architecture boxes" % [
+		n_boxes, arch.size(), fights, overlaps])
+	anim_auto = false
+	for v in BUILD_VIEWS:
+		cam.position = BUILD_VIEWS[v][0]
+		cam.look_at(BUILD_VIEWS[v][1])
+		for mode in ["off", "world"]:
+			_set_mode(mode)
+			await _frames(40)
+			await _shot("build_%s_%s.png" % [v, mode])
+
+
 func _frames(n: int) -> void:
 	for i in n:
 		await get_tree().process_frame
@@ -521,7 +605,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest")
 	if not harness:
 		_start_interactive()
 		return
@@ -531,6 +615,8 @@ func _run() -> void:
 		await _artifacts(report)
 	if user_args.has("--flicker"):
 		await _flicker(report)
+	if user_args.has("--buildtest"):
+		await _build_test(report)
 	if user_args.has("--mattest"):
 		anim_auto = false
 		_pose("materials")

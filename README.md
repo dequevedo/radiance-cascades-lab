@@ -151,6 +151,7 @@ Run with a flag after `--` and the lab writes images and numbers to `out/` (git-
 | `--flicker` | 16 consecutive frames per configuration; `py tools/flicker_report.py` measures the shimmer |
 | `--aatest` | the same views with each anti-aliasing mode |
 | `--mattest` | the materials room (with debug views of the reflection and of the metal lookup) and the television at three moments |
+| `--buildtest` | finds faces that would z-fight (same plane, same direction, overlapping) and overlapping walls, then photographs every joint (doors, corners, the bend) |
 | `--uitest` | drives the control panel (views, object picker, split view, presets, reset, looking around) and checks the values |
 
 Switches for A/B measurements: `--cpu-voxelize`, `--inject-full`, `--far-every=1`, `--no-jitter`, `--no-edge-fix`,
@@ -191,7 +192,7 @@ These numbers come from a fast desktop GPU with other programs running; treat th
 ```
 project.godot, main.tscn   Godot project (main.tscn runs src/main.gd)
 src/main.gd                camera, controls, interactive mode and the test harness
-src/shop_scene.gd          the scene: store, corridor, materials room, dark room (box props in KIT)
+src/shop_scene.gd          the scene: rooms and openings painted on a 5 cm grid, the corridor's bend, box props (KIT)
 src/ui_panel.gd            the control panel
 src/object_picker.gd       hover, select and move props (outlines, move gizmo)
 src/outline.gdshader       the screen-space selection outline
