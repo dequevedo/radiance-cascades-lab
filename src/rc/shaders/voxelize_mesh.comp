@@ -13,12 +13,15 @@ layout(set = 0, binding = 7, r32i) uniform restrict iimage3D vox_wind; // windin
 layout(set = 0, binding = 5, std430) restrict readonly buffer Verts {
 	float v[]; // world-space positions, x y z packed
 } verts;
+layout(set = 0, binding = 9, std430) restrict readonly buffer Colors {
+	vec4 c[]; // vertex colours (linear) of the surfaces that use them; pc.a.w = first one + 1
+} colors;
 layout(set = 0, binding = 6, std430) restrict readonly buffer Indices {
 	uint i[]; // per surface, relative to its first vertex
 } indices;
 
 layout(push_constant, std430) uniform Surface {
-	vec4 a;        // triangle count, first index, first vertex
+	vec4 a;        // triangle count, first index, first vertex, first vertex colour + 1 (0 = the surface's albedo)
 	vec4 albedo;   // rgb
 	vec4 emission; // rgb (colour x energy), 0 = not emissive
 	vec4 mat;      // metallic, roughness, transparent (1 = see-through: not voxelized, light passes), closed mesh (1 = fill inside)
@@ -124,8 +127,14 @@ void main() {
 		return;
 	}
 	bool see_through = pc.mat.z > 0.5; // glass: it neither blocks nor bounces light; it colours what goes through it
+	vec3 albedo = pc.albedo.rgb;
+	if (pc.a.w > 0.5) {
+		uint cb = uint(pc.a.w + 0.5) - 1u;
+		uint ib = uint(pc.a.y) + t * 3u;
+		albedo = (colors.c[cb + indices.i[ib]].rgb + colors.c[cb + indices.i[ib + 1u]].rgb + colors.c[cb + indices.i[ib + 2u]].rgb) / 3.0;
+	}
 	// A metal has no diffuse colour: what it reflects is specular, so it bounces no diffuse light.
-	vec3 diffuse = pc.albedo.rgb * (1.0 - pc.mat.x);
+	vec3 diffuse = albedo * (1.0 - pc.mat.x);
 	vec3 a = vertex(t * 3u);
 	vec3 b = vertex(t * 3u + 1u);
 	vec3 c = vertex(t * 3u + 2u);
@@ -145,12 +154,12 @@ void main() {
 			for (int x = lo.x; x <= hi.x; x++) {
 				if (tri_box_overlap(vec3(x, y, z) + 0.5, vec3(0.5), a, b, c)) {
 					if (see_through) {
-						imageStore(vox_tint, ivec3(x, y, z), vec4(pc.albedo.rgb, 1.0));
+						imageStore(vox_tint, ivec3(x, y, z), vec4(albedo, 1.0));
 						continue;
 					}
 					imageStore(vox_albedo, ivec3(x, y, z), vec4(diffuse, 1.0));
 					imageStore(vox_mat, ivec3(x, y, z), vec4(pc.mat.x, pc.mat.y, 0.0, 1.0));
-					imageStore(vox_base, ivec3(x, y, z), vec4(pc.albedo.rgb, 1.0));
+					imageStore(vox_base, ivec3(x, y, z), vec4(albedo, 1.0));
 					if (dot(pc.emission.rgb, vec3(1.0)) > 0.0) {
 						imageStore(vox_emit, ivec3(x, y, z), vec4(pc.emission.rgb, 1.0));
 					}

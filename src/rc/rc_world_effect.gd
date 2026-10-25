@@ -98,6 +98,11 @@ var voxelize_ms := 0.0
 var _mesh_verts := PackedVector3Array()
 var _mesh_idx := PackedInt32Array()
 var _mesh_surf := PackedFloat32Array()
+var _mesh_cols := PackedColorArray()
+var _mesh_aabb := PackedFloat32Array()
+var _mesh_dirty := true # the mesh buffers on the GPU are rebuilt only when the scene changed
+var _col_buf := RID()
+var voxelized_surfaces := 0 # how many surfaces the last voxelization drew (the others were outside the volume)
 var _vert_buf := RID()
 var _idx_buf := RID()
 # Far cascades kept between frames.
@@ -276,6 +281,8 @@ static func collect_meshes(root: Node) -> Dictionary:
 	var verts := PackedVector3Array()
 	var idx := PackedInt32Array()
 	var surf := PackedFloat32Array()
+	var cols := PackedColorArray() # vertex colours of the surfaces whose material uses them as albedo (linear)
+	var aabbs := PackedFloat32Array() # per surface: world bounds (min xyz, max xyz), to voxelize only what is in the volume
 	var stack: Array[Node] = [root]
 	while not stack.is_empty():
 		var node: Node = stack.pop_back()
@@ -308,7 +315,10 @@ static func collect_meshes(root: Node) -> Dictionary:
 					ci.resize(cv.size())
 					for k in cv.size():
 						ci[k] = k
-				cached = [cv, ci, _is_closed(cv, ci)]
+				var cc := PackedColorArray()
+				if arr[Mesh.ARRAY_COLOR] != null:
+					cc = arr[Mesh.ARRAY_COLOR]
+				cached = [cv, ci, _is_closed(cv, ci), cc]
 				_surface_cache[key] = cached
 			var v: PackedVector3Array = cached[0]
 			var ii: PackedInt32Array = cached[1]
@@ -316,11 +326,20 @@ static func collect_meshes(root: Node) -> Dictionary:
 			if mi.has_meta("rc_emission"):
 				em = mi.get_meta("rc_emission")
 			var mp := _material_params(mat)
-			surf.append_array([ii.size() / 3, idx.size(), verts.size(), 0.0, albedo.r, albedo.g, albedo.b, 0.0, em.r, em.g, em.b, 0.0,
+			# Vertex colours (one merged mesh for many objects of different colours): a.w = first colour + 1, 0 = none.
+			var cbase := 0.0
+			var sm := mat as StandardMaterial3D
+			var vc: PackedColorArray = cached[3]
+			if sm != null and sm.vertex_color_use_as_albedo and vc.size() == v.size():
+				cbase = cols.size() + 1.0
+				cols.append_array(vc)
+			surf.append_array([ii.size() / 3, idx.size(), verts.size(), cbase, albedo.r, albedo.g, albedo.b, 0.0, em.r, em.g, em.b, 0.0,
 				mp.x, mp.y, mp.z, 1.0 if cached[2] else 0.0])
+			var box := xf * mi.mesh.get_aabb()
+			aabbs.append_array([box.position.x, box.position.y, box.position.z, box.end.x, box.end.y, box.end.z])
 			verts.append_array(xf * v)
 			idx.append_array(ii)
-	return {"verts": verts, "idx": idx, "surf": surf, "tris": idx.size() / 3}
+	return {"verts": verts, "idx": idx, "surf": surf, "tris": idx.size() / 3, "cols": cols, "aabbs": aabbs}
 
 
 ## Boxes (BoxMesh) under root as (centre, half-extent vector x, y, z, albedo) vec4 records, for objects that move: they are
@@ -461,6 +480,9 @@ func set_scene_meshes(meshes: Dictionary, lights: PackedFloat32Array) -> void:
 	_mesh_verts = meshes["verts"]
 	_mesh_idx = meshes["idx"]
 	_mesh_surf = meshes["surf"]
+	_mesh_cols = meshes.get("cols", PackedColorArray())
+	_mesh_aabb = meshes.get("aabbs", PackedFloat32Array())
+	_mesh_dirty = true
 	_tri_count = meshes["tris"]
 	_tris = PackedFloat32Array()
 	_lights = _select_lights(lights)
@@ -536,7 +558,7 @@ func free_resources() -> void:
 
 func _free_volume() -> void:
 	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1],
-			_probe_keep, _vert_buf, _idx_buf, _amb, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint]:
+			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_probe_keep = RID()
@@ -550,6 +572,8 @@ func _free_volume() -> void:
 	_vox_dyn_emit = RID()
 	_vert_buf = RID()
 	_idx_buf = RID()
+	_col_buf = RID()
+	_mesh_dirty = true
 	_keep_valid = false
 	_rad_full = true
 	_tri_buf = RID()
@@ -711,24 +735,38 @@ func _voxelize_static() -> void:
 	rd.texture_clear(_vox_wind, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_tint, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	if _mesh_surf.size() > 0 and _pipe.has("voxelize_mesh"):
-		for r in [_vert_buf, _idx_buf]:
-			if (r as RID).is_valid():
-				rd.free_rid(r)
-		var vb := _mesh_verts.to_byte_array()
-		_vert_buf = rd.storage_buffer_create(vb.size(), vb)
-		var ib := _mesh_idx.to_byte_array()
-		_idx_buf = rd.storage_buffer_create(ib.size(), ib)
+		if _mesh_dirty or not _vert_buf.is_valid():
+			for r in [_vert_buf, _idx_buf, _col_buf]:
+				if (r as RID).is_valid():
+					rd.free_rid(r)
+			var vb := _mesh_verts.to_byte_array()
+			_vert_buf = rd.storage_buffer_create(vb.size(), vb)
+			var ib := _mesh_idx.to_byte_array()
+			_idx_buf = rd.storage_buffer_create(ib.size(), ib)
+			var cb := _mesh_cols.to_byte_array() if _mesh_cols.size() > 0 else PackedFloat32Array([0, 0, 0, 0]).to_byte_array()
+			_col_buf = rd.storage_buffer_create(cb.size(), cb)
+			_mesh_dirty = false
 		var set_m := UniformSetCacheRD.get_cache(_shader["voxelize_mesh"], 0,
 			[_ubo_u(), _img(1, _vox_static), _img(2, _vox_emit), _img(3, _vox_mat), _img(4, _vox_base), _img(7, _vox_wind), _img(8, _vox_tint), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_vert_buf]),
-			 _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 6, [_idx_buf])])
+			 _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 6, [_idx_buf]), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 9, [_col_buf])])
 		var cl := rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize_mesh"])
 		rd.compute_list_bind_uniform_set(cl, set_m, 0)
+		var vmin := volume_min - Vector3.ONE * voxel_size
+		var vmax := volume_min + Vector3(dims) * voxel_size + Vector3.ONE * voxel_size
+		var has_aabb := _mesh_aabb.size() == _mesh_surf.size() / 16 * 6
+		voxelized_surfaces = 0
 		for k in _mesh_surf.size() / 16:
 			var o := k * 16
 			var tris := int(_mesh_surf[o])
 			if tris == 0:
 				continue
+			if has_aabb:
+				var a := k * 6
+				if _mesh_aabb[a + 3] < vmin.x or _mesh_aabb[a] > vmax.x or _mesh_aabb[a + 4] < vmin.y or _mesh_aabb[a + 1] > vmax.y \
+						or _mesh_aabb[a + 5] < vmin.z or _mesh_aabb[a + 2] > vmax.z:
+					continue # nothing of it is in the volume
+			voxelized_surfaces += 1
 			rd.compute_list_set_push_constant(cl, _mesh_surf.slice(o, o + 16).to_byte_array(), 64)
 			rd.compute_list_dispatch(cl, ceili(tris / 64.0), 1, 1)
 		rd.compute_list_end()
