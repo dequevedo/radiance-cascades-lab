@@ -73,6 +73,8 @@ func _ready() -> void:
 	effect_world.near_dirs = 8 if high else 6
 	effect_world.temporal_alpha = 0.2 if high else 0.25
 	effect_world.sky_radiance = Color.BLACK
+	effect_world.sky_horizon = Color.BLACK
+	effect_world.sky_ground = Color.BLACK
 	effect_ss.sky_radiance = Color.BLACK
 	get_viewport().use_debanding = true
 	for a in user_args:
@@ -803,7 +805,9 @@ func set_sun(v: float) -> void:
 	if shop != null:
 		shop.sun_energy = v
 	var k := clampf(v / 3.0, 0.0, 1.0)
-	effect_world.sky_radiance = Color(0.35, 0.5, 0.8) * k
+	effect_world.sky_radiance = Color(0.3, 0.45, 0.85) * k
+	effect_world.sky_horizon = Color(0.75, 0.8, 0.85) * k
+	effect_world.sky_ground = Color(0.25, 0.22, 0.18) * k
 	if world_env != null:
 		world_env.environment.ambient_light_energy = 0.02 + 0.06 * k
 

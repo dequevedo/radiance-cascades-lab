@@ -16,7 +16,9 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var albedo_luma := 0.6
 @export var max_radiance := 16.0
 @export var gather_bias := 0.35
-@export var sky_radiance := Color(0.02, 0.03, 0.06)
+@export var sky_radiance := Color(0.02, 0.03, 0.06) # the sky overhead (what rays that leave the volume upwards see)
+@export var sky_horizon := Color(0.02, 0.03, 0.06) # towards the horizon
+@export var sky_ground := Color(0.01, 0.01, 0.01) # below the horizon
 @export var debug_mode := 0 # 0 composite, 1 indirect only, 2 voxel albedo under the pixel
 @export var use_albedo_texture := true # per-pixel albedo from a second, unshaded render (a stand-in for a G-buffer)
 @export var final_gather := true # per-pixel short rays + 4x4 gather for the near field (probes only start past near_range)
@@ -47,6 +49,10 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var split := -1.0 # split view: fraction of the screen width, left of it shows no bounce light; < 0 = off
 
 const MAX_DYN_BOXES := 64
+## Per light: (position, range), (colour x energy, type: 0 omni, 1 directional, 2 spot), (direction the light travels, decay),
+## (cosine of the spot angle, spot attenuation, 0, 0).
+const LIGHT_FLOATS := 16
+const MAX_LIGHTS := 64 # per frame; with more in the scene, the ones that reach the volume, nearest to its centre first
 const BOX_FLOATS := 24 # per moving box: centre, three half-extent vectors, albedo, emission (6 vec4)
 
 var rd: RenderingDevice
@@ -368,15 +374,48 @@ static func collect_lights(root, flat := false) -> PackedFloat32Array:
 		if not flat:
 			stack.append_array(node.get_children())
 		var omni := node as OmniLight3D
-		if omni != null and omni.visible:
+		if omni != null and omni.visible and omni.light_energy > 0.0:
 			var c := omni.light_color.srgb_to_linear() * omni.light_energy
 			var p := omni.global_position
-			out.append_array([p.x, p.y, p.z, omni.omni_range, c.r, c.g, c.b, 0.0, 0.0, 0.0, 0.0, omni.omni_attenuation])
+			out.append_array([p.x, p.y, p.z, omni.omni_range, c.r, c.g, c.b, 0.0, 0.0, 0.0, 0.0, omni.omni_attenuation, 0.0, 0.0, 0.0, 0.0])
+		var spot := node as SpotLight3D
+		if spot != null and spot.visible and spot.light_energy > 0.0:
+			var c3 := spot.light_color.srgb_to_linear() * spot.light_energy
+			var p3 := spot.global_position
+			var d3 := -spot.global_transform.basis.z.normalized() # a spot shines along its -Z
+			out.append_array([p3.x, p3.y, p3.z, spot.spot_range, c3.r, c3.g, c3.b, 2.0, d3.x, d3.y, d3.z, spot.spot_attenuation,
+				cos(deg_to_rad(spot.spot_angle)), spot.spot_angle_attenuation, 0.0, 0.0])
 		var sun := node as DirectionalLight3D
 		if sun != null and sun.visible:
 			var c2 := sun.light_color.srgb_to_linear() * sun.light_energy
 			var d := sun.global_transform.basis.z
-			out.append_array([0.0, 0.0, 0.0, 0.0, c2.r, c2.g, c2.b, 1.0, d.x, d.y, d.z, 0.0])
+			out.append_array([0.0, 0.0, 0.0, 0.0, c2.r, c2.g, c2.b, 1.0, d.x, d.y, d.z, 0.0, 0.0, 0.0, 0.0, 0.0])
+	return out
+
+
+## At most MAX_LIGHTS: the directional ones, then the others whose reach touches the volume, nearest to its centre first.
+func _select_lights(lights: PackedFloat32Array) -> PackedFloat32Array:
+	var n := lights.size() / LIGHT_FLOATS
+	if n <= MAX_LIGHTS:
+		return lights
+	var vmin := volume_min
+	var vmax := volume_min + Vector3(dims) * voxel_size
+	var centre := (vmin + vmax) * 0.5
+	var picks := []
+	for i in n:
+		var o := i * LIGHT_FLOATS
+		if lights[o + 7] > 0.5 and lights[o + 7] < 1.5:
+			picks.append([-1.0, i])
+			continue
+		var p := Vector3(lights[o], lights[o + 1], lights[o + 2])
+		if p.clamp(vmin, vmax).distance_to(p) > lights[o + 3]:
+			continue
+		picks.append([p.distance_to(centre), i])
+	picks.sort_custom(func(a, b): return a[0] < b[0])
+	var out := PackedFloat32Array()
+	for k in mini(picks.size(), MAX_LIGHTS):
+		var o: int = picks[k][1] * LIGHT_FLOATS
+		out.append_array(lights.slice(o, o + LIGHT_FLOATS))
 	return out
 
 
@@ -397,16 +436,16 @@ func update_dynamic(boxes: PackedFloat32Array, lights: PackedFloat32Array) -> vo
 				ext += Vector3(absf(ax.x), absf(ax.y), absf(ax.z))
 			_dyn_min = _dyn_min.min(c - ext - Vector3.ONE * 0.3)
 			_dyn_max = _dyn_max.max(c + ext + Vector3.ONE * 0.3)
-	_lights = lights
-	_light_count = mini(lights.size() / 12, 16)
+	_lights = _select_lights(lights)
+	_light_count = mini(_lights.size() / LIGHT_FLOATS, MAX_LIGHTS)
 
 
 func set_scene(tris: PackedFloat32Array, lights: PackedFloat32Array) -> void:
 	_tris = tris
 	_tri_count = tris.size() / 16
 	_mesh_surf = PackedFloat32Array()
-	_lights = lights
-	_light_count = mini(lights.size() / 12, 16)
+	_lights = _select_lights(lights)
+	_light_count = mini(_lights.size() / LIGHT_FLOATS, MAX_LIGHTS)
 
 
 ## New static meshes only (a prop was moved): call revoxelize_static() on the render thread after it.
@@ -424,8 +463,8 @@ func set_scene_meshes(meshes: Dictionary, lights: PackedFloat32Array) -> void:
 	_mesh_surf = meshes["surf"]
 	_tri_count = meshes["tris"]
 	_tris = PackedFloat32Array()
-	_lights = lights
-	_light_count = mini(lights.size() / 12, 16)
+	_lights = _select_lights(lights)
+	_light_count = mini(_lights.size() / LIGHT_FLOATS, MAX_LIGHTS)
 	# Bounds of the see-through surfaces: rays look up the glass colour only inside them.
 	_has_glass = false
 	for k in _mesh_surf.size() / 16:
@@ -478,7 +517,7 @@ func _init_rd() -> void:
 	lin.repeat_v = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
 	lin.repeat_w = RenderingDevice.SAMPLER_REPEAT_MODE_CLAMP_TO_EDGE
 	_sampler_lin = rd.sampler_create(lin)
-	_ubo = rd.uniform_buffer_create(448)
+	_ubo = rd.uniform_buffer_create(480)
 
 
 func free_resources() -> void:
@@ -569,6 +608,8 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	p.append_array([_dyn_max.x, _dyn_max.y, _dyn_max.z, temporal_noise_floor])
 	p.append_array([_glass_min.x, _glass_min.y, _glass_min.z, 1.0 if (glass_tint and _has_glass) else 0.0])
 	p.append_array([_glass_max.x, _glass_max.y, _glass_max.z, 0.0])
+	p.append_array([sky_horizon.r, sky_horizon.g, sky_horizon.b, 0.0])
+	p.append_array([sky_ground.r, sky_ground.g, sky_ground.b, 0.0])
 	var bytes := p.to_byte_array()
 	rd.buffer_update(_ubo, 0, bytes.size(), bytes)
 
@@ -620,7 +661,7 @@ func rebuild() -> void:
 	_pw_lo = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	_pw_hi = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	var lights := _lights.duplicate()
-	lights.resize(16 * 12)
+	lights.resize(MAX_LIGHTS * LIGHT_FLOATS)
 	var lb := lights.to_byte_array()
 	_light_buf = rd.storage_buffer_create(lb.size(), lb)
 	_write_ubo(Projection.IDENTITY, Projection.IDENTITY, Vector2i(1, 1))
@@ -945,7 +986,7 @@ func _ensure_prev_color(size: Vector2i) -> void:
 ## the volume that can have changed: the reach of every light that changed, and of every light that reaches a moving object.
 func _update_dynamic_volume() -> void:
 	var lights := _lights.duplicate()
-	lights.resize(16 * 12)
+	lights.resize(MAX_LIGHTS * LIGHT_FLOATS)
 	var lb := lights.to_byte_array()
 	rd.buffer_update(_light_buf, 0, lb.size(), lb)
 	var boxes := _dyn_boxes.slice(0, _dyn_count * BOX_FLOATS)
@@ -1002,17 +1043,17 @@ func _dirty_region(boxes_moved: bool) -> AABBi:
 		return whole
 	var lo := Vector3(INF, INF, INF)
 	var hi := Vector3(-INF, -INF, -INF)
-	var count := maxi(_lights.size(), _prev_lights.size()) / 12
+	var count := maxi(_lights.size(), _prev_lights.size()) / LIGHT_FLOATS
 	for i in count:
-		var o := i * 12
-		var now := _lights.slice(o, o + 12)
-		var was := _prev_lights.slice(o, o + 12)
+		var o := i * LIGHT_FLOATS
+		var now := _lights.slice(o, o + LIGHT_FLOATS)
+		var was := _prev_lights.slice(o, o + LIGHT_FLOATS)
 		if now == was:
 			continue
 		for rec in [now, was]:
-			if rec.size() < 12:
+			if rec.size() < LIGHT_FLOATS:
 				continue
-			if rec[7] > 0.5: # a directional light changed: its shadows can move anywhere
+			if rec[7] > 0.5 and rec[7] < 1.5: # a directional light changed: its shadows can move anywhere
 				if rec[4] + rec[5] + rec[6] > 0.0:
 					return whole
 				continue
@@ -1030,9 +1071,9 @@ func _dirty_region(boxes_moved: bool) -> AABBi:
 			lo = lo.min(b_lo)
 			hi = hi.max(b_hi)
 			# Every light that reaches the moving objects can cast a changed shadow anywhere in its own reach.
-			for i in _lights.size() / 12:
-				var o := i * 12
-				if _lights[o + 7] > 0.5:
+			for i in _lights.size() / LIGHT_FLOATS:
+				var o := i * LIGHT_FLOATS
+				if _lights[o + 7] > 0.5 and _lights[o + 7] < 1.5:
 					if _lights[o + 4] + _lights[o + 5] + _lights[o + 6] > 0.0:
 						return whole
 					continue

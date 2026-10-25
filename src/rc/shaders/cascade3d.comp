@@ -82,6 +82,14 @@ vec3 sample_upper(ivec3 probe, ivec2 dij, int an, float spacing) {
 	return wsum > 1e-4 ? acc / wsum : vec3(0.0);
 }
 
+// The sky seen along dir: the zenith colour overhead, the horizon colour around it, the ground below.
+vec3 sky_color(vec3 dir) {
+	if (dir.y >= 0.0) {
+		return mix(P.sky_horizon.rgb, P.sky.rgb, sqrt(dir.y));
+	}
+	return mix(P.sky_horizon.rgb, P.sky_ground.rgb, smoothstep(0.0, 0.2, -dir.y));
+}
+
 void main() {
 	ivec3 g = ivec3(gl_GlobalInvocationID);
 	int an = int(pc.a.y + 0.5);
@@ -125,7 +133,7 @@ void main() {
 	}
 	vec3 rest = vec3(0.0);
 	if (T > 0.02) {
-		rest = top ? P.sky.rgb : sample_upper(probe, dij, an, spacing);
+		rest = top ? sky_color(dir) : sample_upper(probe, dij, an, spacing);
 	}
 	vec3 result = L + T * Tc * rest;
 	imageStore(out_img, g, vec4(result, 1.0));

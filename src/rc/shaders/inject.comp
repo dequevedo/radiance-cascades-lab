@@ -187,13 +187,15 @@ void main() {
 	vec3 direct = vec3(0.0);
 	int count = int(P.vol_dims.w);
 	for (int i = 0; i < count; i++) {
-		vec4 a = lights.l[i * 3];
-		vec4 b = lights.l[i * 3 + 1];
-		vec4 d = lights.l[i * 3 + 2];
+		vec4 a = lights.l[i * 4];
+		vec4 b = lights.l[i * 4 + 1];
+		vec4 d = lights.l[i * 4 + 2];
+		vec4 e = lights.l[i * 4 + 3];
 		vec3 l;
 		float dist;
 		float atten = 1.0;
-		if (b.w < 0.5) {
+		bool positional = b.w < 0.5 || b.w > 1.5; // omni or spot
+		if (positional) {
 			vec3 to = a.xyz - pos;
 			dist = length(to);
 			if (dist > a.w || dist < 1e-3) {
@@ -205,6 +207,15 @@ void main() {
 			nd *= nd;
 			nd = max(1.0 - nd, 0.0);
 			atten = nd * nd * pow(max(dist, 1e-4), -d.w);
+			if (b.w > 1.5) {
+				// Spot: Godot's cone falloff (e.x = cosine of the spot angle, e.y = its attenuation exponent).
+				float scos = max(dot(-l, d.xyz), e.x);
+				float rim = max(1e-4, (1.0 - scos) / (1.0 - e.x));
+				atten *= 1.0 - pow(rim, e.y);
+				if (atten <= 0.0) {
+					continue;
+				}
+			}
 		} else {
 			l = normalize(d.xyz);
 			dist = 80.0;
@@ -213,7 +224,7 @@ void main() {
 		if (cosv <= 0.0) {
 			continue;
 		}
-		float stop = b.w < 0.5 ? max(dist - 0.5, 0.0) : dist;
+		float stop = positional ? max(dist - 0.5, 0.0) : dist;
 		vec3 lit = shadow(spos, l, stop);
 		if (max(max(lit.r, lit.g), lit.b) <= 0.0) {
 			continue;
