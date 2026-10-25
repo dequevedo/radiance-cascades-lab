@@ -8,6 +8,7 @@ layout(set = 0, binding = 1, rgba8) uniform restrict writeonly image3D vox_albed
 layout(set = 0, binding = 2, rgba16f) uniform restrict writeonly image3D vox_emit; // emission rgb, a = 1 where emissive
 layout(set = 0, binding = 3, rgba8) uniform restrict writeonly image3D vox_mat; // metallic, roughness, -, 1 = surface
 layout(set = 0, binding = 4, rgba8) uniform restrict writeonly image3D vox_base; // base colour (what a metal reflects with)
+layout(set = 0, binding = 7, r32i) uniform restrict iimage3D vox_wind; // winding-number steps along +x (fill_solid.comp)
 layout(set = 0, binding = 5, std430) restrict readonly buffer Verts {
 	float v[]; // world-space positions, x y z packed
 } verts;
@@ -19,7 +20,7 @@ layout(push_constant, std430) uniform Surface {
 	vec4 a;        // triangle count, first index, first vertex
 	vec4 albedo;   // rgb
 	vec4 emission; // rgb (colour x energy), 0 = not emissive
-	vec4 mat;      // metallic, roughness, transparent (1 = see-through: not voxelized, light passes)
+	vec4 mat;      // metallic, roughness, transparent (1 = see-through: not voxelized, light passes), closed mesh (1 = fill inside)
 } pc;
 
 bool axis_separates(vec3 axis, vec3 v0, vec3 v1, vec3 v2, vec3 h) {
@@ -57,6 +58,60 @@ bool tri_box_overlap(vec3 c, vec3 h, vec3 a, vec3 b, vec3 d) {
 	return abs(dot(n, v0)) <= h.x * abs(n.x) + h.y * abs(n.y) + h.z * abs(n.z);
 }
 
+// Edge function of the point p against the edge a -> b in the (y, z) plane.
+float edge_fn(vec2 a, vec2 b, vec2 p) {
+	return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+}
+
+// Top-left rule: of two triangles sharing an edge, exactly one claims a point that lies on it.
+bool owns(vec2 a, vec2 b, float e) {
+	vec2 d = b - a;
+	return e > 0.0 || (e == 0.0 && (d.y > 0.0 || (d.y == 0.0 && d.x < 0.0)));
+}
+
+// For a closed mesh: every column of voxels (along x) whose centre line crosses the triangle gets a +1 where the line enters the
+// mesh and a -1 where it leaves (from the side the triangle faces). fill_solid.comp sums them along x: the voxels where the
+// sum is not 0 are inside. Touching or overlapping closed meshes add up correctly.
+void winding_steps(vec3 a, vec3 b, vec3 c, ivec3 dims) {
+	// Godot's front faces are clockwise, so the outward normal is the opposite of cross(b - a, c - a).
+	float nx = -cross(b - a, c - a).x;
+	if (abs(nx) < 1e-9) {
+		return; // parallel to x: the centre lines never cross it
+	}
+	int step = nx < 0.0 ? 1 : -1; // facing -x: the line enters here
+	vec3 tb = b;
+	vec3 tc = c;
+	if (edge_fn(a.yz, b.yz, c.yz) < 0.0) { // counter-clockwise in (y, z), whichever way the triangle faces
+		tb = c;
+		tc = b;
+	}
+	vec2 A = a.yz;
+	vec2 B = tb.yz;
+	vec2 C = tc.yz;
+	float area = edge_fn(A, B, C);
+	// The centre lines are moved off the half-voxel grid by a tiny amount, so a mesh edge never lies exactly on one.
+	const vec2 OFS = vec2(0.5 + 0.00137, 0.5 + 0.00291);
+	ivec2 lo = max(ivec2(floor(min(min(A, B), C) - OFS)) + 1, ivec2(0));
+	ivec2 hi = min(ivec2(floor(max(max(A, B), C) - OFS)), dims.yz - 1);
+	for (int z = lo.y; z <= hi.y; z++) {
+		for (int y = lo.x; y <= hi.x; y++) {
+			vec2 p = vec2(y, z) + OFS;
+			float w0 = edge_fn(B, C, p);
+			float w1 = edge_fn(C, A, p);
+			float w2 = edge_fn(A, B, p);
+			if (!(owns(B, C, w0) && owns(C, A, w1) && owns(A, B, w2))) {
+				continue;
+			}
+			// Where the line crosses the triangle (x of the plane at p), and the first voxel whose centre is beyond it.
+			float x = (w0 * a.x + w1 * tb.x + w2 * tc.x) / area;
+			int k = max(int(floor(x - 0.5)) + 1, 0);
+			if (k < dims.x) {
+				imageAtomicAdd(vox_wind, ivec3(k, y, z), step);
+			}
+		}
+	}
+}
+
 vec3 vertex(uint k) {
 	uint j = (uint(pc.a.z) + indices.i[uint(pc.a.y) + k]) * 3u;
 	return (vec3(verts.v[j], verts.v[j + 1u], verts.v[j + 2u]) - P.vol_min.xyz) / P.vol_min.w;
@@ -73,6 +128,9 @@ void main() {
 	vec3 b = vertex(t * 3u + 1u);
 	vec3 c = vertex(t * 3u + 2u);
 	ivec3 dims = ivec3(P.vol_dims.xyz);
+	if (pc.mat.w > 0.5) {
+		winding_steps(a, b, c, dims);
+	}
 	vec3 lo_f = min(min(a, b), c);
 	vec3 hi_f = max(max(a, b), c);
 	if (any(greaterThan(lo_f, vec3(dims))) || any(lessThan(hi_f, vec3(0.0)))) {

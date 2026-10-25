@@ -1,0 +1,24 @@
+// One thread = one column of voxels along x: sums the winding-number steps the closed meshes left in vox_wind
+// (voxelize_mesh.comp) and marks every voxel whose centre is inside one (sum not 0) as solid. Its colour does not matter:
+// an inside voxel has no empty neighbour, so it is never lit and never seen; it only blocks rays and switches off probes.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 1, rgba8) uniform restrict image3D vox_albedo;
+layout(set = 0, binding = 2, r32i) uniform restrict readonly iimage3D vox_wind;
+
+void main() {
+	ivec3 dims = ivec3(P.vol_dims.xyz);
+	int y = int(gl_GlobalInvocationID.x);
+	int z = int(gl_GlobalInvocationID.y);
+	if (y >= dims.y || z >= dims.z) {
+		return;
+	}
+	int w = 0;
+	for (int x = 0; x < dims.x; x++) {
+		w += imageLoad(vox_wind, ivec3(x, y, z)).r;
+		if (w != 0 && imageLoad(vox_albedo, ivec3(x, y, z)).a < 0.5) {
+			imageStore(vox_albedo, ivec3(x, y, z), vec4(0.0, 0.0, 0.0, 1.0));
+		}
+	}
+}

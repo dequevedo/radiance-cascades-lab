@@ -81,8 +81,11 @@ the same per cascade.
 | **Metals** | no diffuse bounce; a Fresnel-weighted reflection of the room in their own colour |
 | **Glossy plastic** | a 4 % reflection head-on, stronger at grazing angles |
 | **Glass** | see-through materials are left out of the voxels, so light passes |
+| **Solid objects, one-sided light** | closed meshes are filled inside, so no probe sits in the hollow of a box; a voxel shows its light only to rays coming from the side its surface faces, so nothing glows through or behind an object |
 
 ![One bounce against more bounces, bounce light only](docs/readme/more_bounces.jpg)
+
+![Light behind the television: hollow objects with light on every side, and solid objects with one-sided light](docs/readme/tv_leak.jpg)
 
 ### Keeping it cheap and clean
 

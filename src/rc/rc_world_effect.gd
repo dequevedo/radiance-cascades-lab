@@ -37,6 +37,8 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var history_aware := true # pixels with a short history (just uncovered) are filtered wider and averaged over their frames so far
 @export var bounce := 0.8 # more bounces: last frame's probe light added to every lit voxel, times this (0 = a single bounce)
 @export var bounce_full_every := 4 # with more bounces on, the whole volume is lit again every Nth frame (the light keeps bouncing)
+@export var facing := true # a voxel shows its light only to rays coming from the side its surface faces
+@export var solid_fill := true # fill the inside of closed meshes (else objects are hollow shells and probes inside them leak)
 @export var spec_strength := 1.0 # glossy reflections from the probes (Fresnel-weighted, blurred)
 @export var emission_scale := 1.0 # emissive surfaces light the scene, times this
 @export var split := -1.0 # split view: fraction of the screen width, left of it shows no bounce light; < 0 = off
@@ -94,6 +96,8 @@ var _amb := RID() # ambient cube per probe of cascade 0 (6 faces side by side in
 var _vox_emit := RID()
 var _vox_mat := RID() # per voxel: metallic, roughness
 var _vox_base := RID() # per voxel: base colour (metals reflect with it)
+var _vox_nrm := RID() # per voxel: surface normal (written by inject.comp with the light)
+var _vox_wind := RID() # per voxel: winding-number steps of the closed meshes along +x (filled in by fill_solid.comp)
 var _vox_dyn_emit := RID() # emission of the moving objects
 var _spec_tex := RID() # per pixel: glossy reflection, metallic
 var _keep_valid := false
@@ -222,6 +226,34 @@ static func _material_params(mat: Material) -> Vector3:
 static var _surface_cache := {}
 
 
+## True when every edge of the surface (vertices welded by position) is shared by exactly two triangles: a closed mesh, whose
+## inside can be filled. A plane, or a mesh with a hole, is voxelized as a shell only.
+static func _is_closed(v: PackedVector3Array, ii: PackedInt32Array) -> bool:
+	var weld := {}
+	var ids := PackedInt32Array()
+	ids.resize(v.size())
+	for k in v.size():
+		var q := v[k].snapped(Vector3.ONE * 1e-4)
+		if not weld.has(q):
+			weld[q] = weld.size()
+		ids[k] = weld[q]
+	var edges := {}
+	for t in ii.size() / 3:
+		var a := ids[ii[t * 3]]
+		var b := ids[ii[t * 3 + 1]]
+		var c := ids[ii[t * 3 + 2]]
+		if a == b or b == c or a == c:
+			continue # degenerate (the pole of a sphere)
+		for e in [Vector2i(mini(a, b), maxi(a, b)), Vector2i(mini(b, c), maxi(b, c)), Vector2i(mini(a, c), maxi(a, c))]:
+			edges[e] = edges.get(e, 0) + 1
+	if edges.is_empty():
+		return false
+	for n in edges.values():
+		if n != 2:
+			return false
+	return true
+
+
 static func collect_meshes(root: Node) -> Dictionary:
 	var verts := PackedVector3Array()
 	var idx := PackedInt32Array()
@@ -258,7 +290,7 @@ static func collect_meshes(root: Node) -> Dictionary:
 					ci.resize(cv.size())
 					for k in cv.size():
 						ci[k] = k
-				cached = [cv, ci]
+				cached = [cv, ci, _is_closed(cv, ci)]
 				_surface_cache[key] = cached
 			var v: PackedVector3Array = cached[0]
 			var ii: PackedInt32Array = cached[1]
@@ -267,7 +299,7 @@ static func collect_meshes(root: Node) -> Dictionary:
 				em = mi.get_meta("rc_emission")
 			var mp := _material_params(mat)
 			surf.append_array([ii.size() / 3, idx.size(), verts.size(), 0.0, albedo.r, albedo.g, albedo.b, 0.0, em.r, em.g, em.b, 0.0,
-				mp.x, mp.y, mp.z, 0.0])
+				mp.x, mp.y, mp.z, 1.0 if cached[2] else 0.0])
 			verts.append_array(xf * v)
 			idx.append_array(ii)
 	return {"verts": verts, "idx": idx, "surf": surf, "tris": idx.size() / 3}
@@ -404,7 +436,7 @@ func _init_rd() -> void:
 	rd = RenderingServer.get_rendering_device()
 	if rd == null:
 		return
-	for n in ["voxelize", "voxelize_mesh", "voxelize_boxes", "inject", "ambient", "cascade3d", "gather3d", "nearfield", "final", "probe_weights"]:
+	for n in ["voxelize", "voxelize_mesh", "fill_solid", "voxelize_boxes", "inject", "ambient", "cascade3d", "gather3d", "nearfield", "final", "probe_weights"]:
 		_shader[n] = _compile(n)
 		if (_shader[n] as RID).is_valid():
 			_pipe[n] = rd.compute_pipeline_create(_shader[n])
@@ -434,7 +466,7 @@ func free_resources() -> void:
 
 func _free_volume() -> void:
 	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1],
-			_probe_keep, _vert_buf, _idx_buf, _amb, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base]:
+			_probe_keep, _vert_buf, _idx_buf, _amb, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_probe_keep = RID()
@@ -442,6 +474,8 @@ func _free_volume() -> void:
 	_vox_emit = RID()
 	_vox_mat = RID()
 	_vox_base = RID()
+	_vox_wind = RID()
+	_vox_nrm = RID()
 	_vox_dyn_emit = RID()
 	_vert_buf = RID()
 	_idx_buf = RID()
@@ -491,7 +525,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	_pack_mat(proj, p)
 	_pack_mat(proj.inverse(), p)
 	_pack_mat(cam_to_world, p)
-	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0))])
+	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0))])
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
@@ -543,6 +577,8 @@ func rebuild() -> void:
 	_vox_emit = _tex3d(dims, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	_vox_mat = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_base = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
+	_vox_wind = _tex3d(dims, RenderingDevice.DATA_FORMAT_R32_SINT)
+	_vox_nrm = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_SNORM)
 	_vox_dyn_emit = _tex3d(dims, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	var g0 := _grid(probe_spacing)
 	_amb = _tex3d(Vector3i(g0.x * 6, g0.y, g0.z), RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
@@ -564,6 +600,19 @@ func rebuild() -> void:
 	volume_ready = true
 
 
+## Debug (render thread, slow): how many voxels of the static volume are solid.
+var debug_solid_count := -1
+
+
+func debug_count_solid() -> void:
+	var data := rd.texture_get_data(_vox_static, 0)
+	var n := 0
+	for k in range(3, data.size(), 4):
+		if data[k] > 127:
+			n += 1
+	debug_solid_count = n
+
+
 ## Voxelizes the static scene again (after a prop was moved or recoloured): same volume, new contents. Render thread.
 func revoxelize_static() -> void:
 	if rd == null or not volume_ready:
@@ -583,6 +632,7 @@ func _voxelize_static() -> void:
 	rd.texture_clear(_vox_emit, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_mat, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_base, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	rd.texture_clear(_vox_wind, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	if _mesh_surf.size() > 0 and _pipe.has("voxelize_mesh"):
 		for r in [_vert_buf, _idx_buf]:
 			if (r as RID).is_valid():
@@ -592,7 +642,7 @@ func _voxelize_static() -> void:
 		var ib := _mesh_idx.to_byte_array()
 		_idx_buf = rd.storage_buffer_create(ib.size(), ib)
 		var set_m := UniformSetCacheRD.get_cache(_shader["voxelize_mesh"], 0,
-			[_ubo_u(), _img(1, _vox_static), _img(2, _vox_emit), _img(3, _vox_mat), _img(4, _vox_base), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_vert_buf]),
+			[_ubo_u(), _img(1, _vox_static), _img(2, _vox_emit), _img(3, _vox_mat), _img(4, _vox_base), _img(7, _vox_wind), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 5, [_vert_buf]),
 			 _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 6, [_idx_buf])])
 		var cl := rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["voxelize_mesh"])
@@ -605,6 +655,15 @@ func _voxelize_static() -> void:
 			rd.compute_list_set_push_constant(cl, _mesh_surf.slice(o, o + 16).to_byte_array(), 64)
 			rd.compute_list_dispatch(cl, ceili(tris / 64.0), 1, 1)
 		rd.compute_list_end()
+		# Solid fill: every voxel whose centre is inside a closed mesh (winding number != 0, summed along +x) becomes solid, so
+		# a box is a block and not a shell with an empty inside that probes could sit in and see the inner faces from.
+		if solid_fill and _pipe.has("fill_solid"):
+			var set_f := UniformSetCacheRD.get_cache(_shader["fill_solid"], 0, [_ubo_u(), _img(1, _vox_static), _img(2, _vox_wind)])
+			cl = rd.compute_list_begin()
+			rd.compute_list_bind_compute_pipeline(cl, _pipe["fill_solid"])
+			rd.compute_list_bind_uniform_set(cl, set_f, 0)
+			rd.compute_list_dispatch(cl, ceili(dims.y / 8.0), ceili(dims.z / 8.0), 1)
+			rd.compute_list_end()
 	else:
 		if _tri_buf.is_valid():
 			rd.free_rid(_tri_buf)
@@ -632,7 +691,7 @@ func _inject(cl: int, lo: Vector3i, n: Vector3i) -> void:
 		[_ubo_u(), _img(1, _vox_albedo), _img(3, _vox_rad), _u(RenderingDevice.UNIFORM_TYPE_STORAGE_BUFFER, 4, [_light_buf]),
 		 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]), _img(21, _vox_dyn),
 		 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 14, [_sampler_lin, _vox_albedo]), _img(22, _amb), _img(23, _vox_emit),
-		 _img(24, _vox_dyn_emit)])
+		 _img(24, _vox_dyn_emit), _img(25, _vox_nrm)])
 	rd.compute_list_bind_uniform_set(cl, set_i, 0)
 	var pc := PackedFloat32Array([lo.x, lo.y, lo.z, bounce, emission_scale, 0.0, 0.0, 0.0])
 	rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 32)
@@ -704,7 +763,8 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			[_ubo_u(), _img(1, _vox_albedo), _img(3, _vox_rad), _img(6, inp), _img(7, out_t), _img(19, _pw_lo), _img(20, _pw_hi),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 14, [_sampler_lin, _vox_albedo]),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 15, [_sampler_lin, _vox_rad]),
-				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn])])
+				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]),
+				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 21, [_sampler_lin, _vox_nrm])])
 		var pc := PackedFloat32Array([n, an, spacing, 1.0 if n == cascades - 1 else 0.0, start, end, 0.0, 0.0])
 		rd.compute_list_bind_uniform_set(cl, set_rid, 0)
 		rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 32)
@@ -742,7 +802,8 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 19, [_sampler, _vox_base]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 14, [_sampler_lin, _vox_albedo]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 15, [_sampler_lin, _vox_rad]),
-			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn])])
+			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]),
+			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 21, [_sampler_lin, _vox_nrm])])
 		var npc := PackedFloat32Array([A0, near_dirs, shift_x, shift_y])
 		rd.compute_list_bind_uniform_set(cl, near_set, 0)
 		rd.compute_list_set_push_constant(cl, npc.to_byte_array(), 16)

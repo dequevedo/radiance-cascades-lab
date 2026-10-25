@@ -771,3 +771,26 @@ dark room now stops one wall short of the corridor, so the bend never grazes its
 and every pair of overlapping building boxes, then photographs the joints. Before: **242** coplanar overlapping face pairs (most
 in the props: shelves as wide as their uprights, the sofa's back and seat). After: **0**, and 0 overlapping building boxes
 (68 boxes for the whole building).
+
+
+---
+
+# Step 13: no light behind the television
+
+The wall behind the dark room's television had a bright halo hugging the set's outline, although no light can reach it from the
+screen. Two causes, both from the voxels:
+
+1. **Objects were hollow.** The voxelizer marked only the voxels the triangles touch, so a 45 cm television, a 30 cm wall or a
+   slab was a shell with an empty inside. Probes inside it were live and saw the inner faces; the normal of a shell voxel was
+   pulled towards the empty inside. Now every closed mesh (each edge shared by exactly two triangles) is filled: the
+   voxelizer adds a +1 / -1 winding step where each column of voxel centres enters or leaves it, and `fill_solid.comp` sums
+   them along x. The inside of overlapping or touching objects comes out right. The bend of the corridor got end caps so it is
+   closed too. Solid voxels: 244,173 -> 416,683. The scene got about 10 % brighter (dark probes inside walls no longer
+   averaged in).
+2. **A voxel's light went every way.** A voxel holds one colour, so the edge of the glowing screen was as bright seen from behind
+   or from above as from the front, and the wall behind the set saw it past the edges of the cabinet. `inject.comp` now writes
+   the surface normal it already computes into a new volume, and the rays of the cascades and the near field weight a voxel's
+   light by the side it is seen from (`facing_weight`); occlusion is unchanged. This one removed the halo.
+
+`--hollow` and `--no-facing` switch each one off for A/B. Cost (1920x1080, High, still): 5.01 -> 5.00 ms of GPU for the effect
+(200 FPS), voxelizing 1.0 -> 1.4 ms.

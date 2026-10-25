@@ -182,6 +182,7 @@ const BUILD_VIEWS := {
 	"dark_room_corner": [Vector3(-15.0, 1.4, -4.2), Vector3(-18.5, 2.8, -1.6)],
 	"store_corner": [Vector3(3.0, 1.8, 1.5), Vector3(7.0, 2.6, -4.75)],
 	"front_wall": [Vector3(0.0, 1.6, 1.0), Vector3(2.0, 1.4, 5.0)],
+	"tv_back_wall": [Vector3(-14.6, 1.5, -3.1), Vector3(-18.0, 0.95, -3.1)],
 }
 
 
@@ -244,6 +245,10 @@ func _build_test(report: PackedStringArray) -> void:
 				overlaps += 1
 				if overlaps <= 20:
 					report.append("  overlap: %s  x  %s" % [arch[i][2], arch[j][2]])
+	RenderingServer.call_on_render_thread(effect_world.debug_count_solid)
+	RenderingServer.force_sync()
+	await _frames(2)
+	report.append("solid voxels: %d (solid fill %s)" % [effect_world.debug_solid_count, str(effect_world.solid_fill)])
 	report.append("buildtest: %d boxes (%d architecture), %d coplanar overlapping face pairs, %d overlapping architecture boxes" % [
 		n_boxes, arch.size(), fights, overlaps])
 	anim_auto = false
@@ -583,6 +588,8 @@ func _run() -> void:
 	report.append("Viewport %dx%d, GPU %s" % [size.x, size.y, RenderingServer.get_video_adapter_name()])
 	# A/B switches for the measurements: the old CPU triangle packing, injecting the whole volume, far cascades every frame.
 	effect_world.inject_partial = not user_args.has("--inject-full")
+	effect_world.solid_fill = not user_args.has("--hollow")
+	effect_world.facing = not user_args.has("--no-facing")
 	effect_world.jitter = not user_args.has("--no-jitter")
 	effect_world.edge_fix = not user_args.has("--no-edge-fix")
 	effect_world.denoise = not user_args.has("--no-denoise")

@@ -645,6 +645,12 @@ func build_bend(parent: Node) -> void:
 				_quad(s, [centre + d0 * ra + y0v, centre + d1 * ra + y0v, centre + d1 * ra + y1v, centre + d0 * ra + y1v], [-d0, -d1, -d1, -d0])
 				_quad(s, [centre + d0 * ra + y1v, centre + d1 * ra + y1v, centre + d1 * rb + y1v, centre + d0 * rb + y1v], [Vector3.UP, Vector3.UP, Vector3.UP, Vector3.UP])
 				_quad(s, [centre + d0 * ra + y0v, centre + d1 * ra + y0v, centre + d1 * rb + y0v, centre + d0 * rb + y0v], [Vector3.DOWN, Vector3.DOWN, Vector3.DOWN, Vector3.DOWN])
+			# End caps: hidden against the straight runs, but they close each piece, so the GI can fill its inside.
+			for t in [0.0, PI * 0.5]:
+				var d := Vector3(-sin(t), 0.0, -cos(t))
+				var cap_n := Vector3(cos(t), 0.0, -sin(t)) * (1.0 if t == 0.0 else -1.0)
+				_quad(s, [centre + d * ra + Vector3(0, y0, 0), centre + d * rb + Vector3(0, y0, 0), centre + d * rb + Vector3(0, y1, 0),
+					centre + d * ra + Vector3(0, y1, 0)], [cap_n, cap_n, cap_n, cap_n])
 	for color in surf:
 		var arrays := []
 		arrays.resize(Mesh.ARRAY_MAX)
