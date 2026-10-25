@@ -569,6 +569,38 @@ func animate(u: float, _t: float) -> void:
 const TV_COLORS: Array[Color] = [Color(0.55, 0.7, 1.0), Color(1.0, 0.95, 0.85), Color(0.35, 0.9, 0.55), Color(1.0, 0.45, 0.3), Color(0.65, 0.5, 1.0)]
 
 
+## A tileable normal map of stone blocks (40 x 20 cm, rows offset by half a block, 1.5 cm mortar joints, a little noise on the
+## faces), for a 0.8 m tile. Built once from a height field.
+func stone_normal_map() -> ImageTexture:
+	const N := 256
+	var noise := FastNoiseLite.new()
+	noise.seed = 7
+	noise.frequency = 0.05
+	var nimg := noise.get_seamless_image(N, N) # tileable
+	var h := PackedFloat32Array()
+	h.resize(N * N)
+	for y in N:
+		for x in N:
+			var u := float(x) / N * 0.8 # metres in the tile
+			var v := float(y) / N * 0.8
+			var row := int(floor(v / 0.2))
+			var bu := fposmod(u + (0.2 if row % 2 == 1 else 0.0), 0.4)
+			var bv := fposmod(v, 0.2)
+			var edge := minf(minf(bu, 0.4 - bu), minf(bv, 0.2 - bv)) # distance to the block's edge
+			var groove := smoothstep(0.006, 0.02, edge)
+			var nz := (nimg.get_pixel(x, y).r - 0.5) * 0.25
+			h[y * N + x] = groove * (1.0 + nz * groove)
+	var img := Image.create(N, N, false, Image.FORMAT_RGB8)
+	for y in N:
+		for x in N:
+			var dx := h[y * N + (x + 1) % N] - h[y * N + (x - 1 + N) % N]
+			var dy := h[((y + 1) % N) * N + x] - h[((y - 1 + N) % N) * N + x]
+			var n := Vector3(-dx * 6.0, dy * 6.0, 1.0).normalized() # OpenGL convention: green points up
+			img.set_pixel(x, y, Color(n.x * 0.5 + 0.5, n.y * 0.5 + 0.5, n.z * 0.5 + 0.5))
+	img.generate_mipmaps()
+	return ImageTexture.create_from_image(img)
+
+
 func sphere(parent: Node, pos: Vector3, radius: float, color: Color, metallic: float, roughness: float) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var sm := SphereMesh.new()
@@ -715,6 +747,21 @@ func build_rooms(S: Node3D, D: Node3D) -> void:
 	gm.roughness = 0.05
 	glass.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	glass.name = "GlassPane"
+
+	# --- Dark room: stone-block panels on the two long walls, with a normal map: the room has no lamp, so their relief can only
+	# show in the television's bounce light (the directional bounce).
+	var stone_normal := stone_normal_map()
+	for z in [-ROOM_Z + 0.01, DARK_Z1 - 0.01]:
+		var panel := box(S, Vector3((DARK_X0 + DIVIDER_X) * 0.5, CEIL * 0.5, z), Vector3(DIVIDER_X - DARK_X0, CEIL, 0.02),
+			Color(0.72, 0.72, 0.7))
+		panel.name = "StonePanel"
+		var pm := panel.material_override as StandardMaterial3D
+		pm.normal_enabled = true
+		pm.normal_texture = stone_normal
+		pm.normal_scale = 1.6
+		pm.uv1_triplanar = true
+		pm.uv1_world_triplanar = true
+		pm.uv1_scale = Vector3.ONE * 1.25 # one texture tile = 0.8 m
 
 	# --- Dark room: no lamp. A television on a stand, a sofa facing it, a rug and a low table.
 	box(S, Vector3(-17.9, 0.25, -3.1), Vector3(0.5, 0.5, 0.9), Color(0.35, 0.25, 0.18)) # stand

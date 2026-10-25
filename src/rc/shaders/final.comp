@@ -19,6 +19,11 @@ layout(set = 0, binding = 16, rgba16f) uniform restrict readonly image2D nrm_pre
 layout(set = 0, binding = 17, rgba16f) uniform restrict readonly image2D hist_prev; // rgb = bounce light, a = history length (frames)
 layout(set = 0, binding = 18, rgba16f) uniform restrict writeonly image2D hist_cur;
 layout(set = 0, binding = 20, rgba16f) uniform restrict readonly image2D spec_img; // glossy reflection (rgb), metallic (a)
+// Where the bounce light comes from: the brightness-weighted mean of the gathered ray directions (world space). It turns the
+// light gathered for the flat surface into the light the detailed normal (normal maps) receives.
+layout(set = 0, binding = 21, rgba16f) uniform restrict readonly image2D dir_prev;
+layout(set = 0, binding = 22, rgba16f) uniform restrict writeonly image2D dir_cur;
+layout(set = 0, binding = 23) uniform sampler2D detail_tex; // Godot's normal_roughness: the normal with normal maps (view, * 0.5 + 0.5)
 
 layout(push_constant, std430) uniform Final {
 	vec4 a; // a_0, directions per axis of the per-pixel tile, tile shift x, tile shift y
@@ -59,7 +64,8 @@ float pow8(float x) {
 }
 
 // skip > 0: leave out the square that gather_window(..., skip, ...) covers (its sums are already in acc, ws and ws_all).
-void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, int skip, inout vec3 acc, inout float ws, inout float ws_all) {
+void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, int skip, inout vec3 acc, inout float ws, inout float ws_all,
+		inout vec4 sh) {
 	ivec2 sz = ivec2(P.screen.xy);
 	int skip_hi = max(na - skip, skip + 1);
 	for (int oy = -h; oy < max(na - h, h + 1); oy++) {
@@ -81,18 +87,23 @@ void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, int sk
 			if (w < 1e-4) {
 				continue;
 			}
-			acc += imageLoad(near_img, q).rgb * (w * dv.w * max(dot(dv.xyz, n), 0.0));
+			vec3 lq = imageLoad(near_img, q).rgb;
+			acc += lq * (w * dv.w * max(dot(dv.xyz, n), 0.0));
 			ws += w * dv.w;
+			// First moment of the incoming light (no cosine): S0 = sum L, S1 = sum L * direction, on brightness.
+			float lw = dot(lq, vec3(0.2126, 0.7152, 0.0722)) * w * dv.w;
+			sh += vec4(dv.xyz * lw, lw);
 		}
 	}
 }
 
 // Filter: an edge-aware average of the bounce light over a 7 x 7 window (depth and normal test, Gaussian). Where the history is
 // short (just uncovered by a moving object or the camera, so still noisy), the same 49 taps are spread twice as far.
-vec3 filtered(ivec2 p, vec3 n, float dp, float hist_len) {
+vec3 filtered(ivec2 p, vec3 n, float dp, float hist_len, out vec3 v) {
 	ivec2 sz = ivec2(P.screen.xy);
 	int step_px = ((int(P.screen.w + 0.5) & 8) != 0 && hist_len < 4.0) ? 2 : 1;
 	vec3 acc = vec3(0.0);
+	vec3 vacc = vec3(0.0);
 	float ws = 0.0;
 	for (int oy = -3; oy <= 3; oy++) {
 		for (int ox = -3; ox <= 3; ox++) {
@@ -105,14 +116,26 @@ vec3 filtered(ivec2 p, vec3 n, float dp, float hist_len) {
 			float c = pow8(max(dot(n, nq.xyz), 0.0));
 			float w = exp(-dz * dz) * c * c * exp(-float(ox * ox + oy * oy) / 8.0);
 			acc += w * imageLoad(hist_prev, q).rgb;
+			vacc += w * imageLoad(dir_prev, q).xyz;
 			ws += w;
 		}
 	}
+	v = ws > 0.0 ? vacc / ws : imageLoad(dir_prev, p).xyz;
 	return ws > 0.0 ? acc / ws : imageLoad(hist_prev, p).rgb;
 }
 
-void composite(ivec2 p, vec3 n, vec3 gi_t) {
+void composite(ivec2 p, vec3 n, vec3 gi_t, vec3 v) {
 	vec4 col = imageLoad(color_img, p);
+	// Directional bounce: the light was gathered for the flat surface (normal n). With the irradiance of a first-order spherical
+	// harmonic, E(m) = S0 (1/4 + 1/2 v.m), the detailed normal m (normal maps) gets E(m) / E(n) of it: relief shows in bounce light.
+	if ((int(P.screen.w + 0.5) & 128) != 0) {
+		vec3 nd = mat3(P.cam_to_world) * normalize(texelFetch(detail_tex, p, 0).xyz * 2.0 - 1.0);
+		if (dot(nd, n) > 0.3) {
+			float e_flat = 0.25 + 0.5 * dot(v, n);
+			float e_detail = 0.25 + 0.5 * dot(v, nd);
+			gi_t *= clamp(e_detail / max(e_flat, 0.05), 0.0, 3.0);
+		}
+	}
 	vec4 sp = imageLoad(spec_img, p);
 	float metallic = sp.a;
 	vec3 albedo;
@@ -176,14 +199,18 @@ void main() {
 	float dp = np.w;
 	bool filter_on = (flags & 4) != 0;
 	if (filter_pass) {
-		composite(p, n, filtered(p, n, dp, imageLoad(hist_prev, p).a));
+		vec3 vf;
+		vec3 gf = filtered(p, n, dp, imageLoad(hist_prev, p).a, vf);
+		composite(p, n, gf, vf);
 		return;
 	}
 	ivec2 shift = ivec2(int(pc.a.z + 0.5), int(pc.a.w + 0.5));
 	vec3 acc = vec3(0.0);
 	float ws = 0.0;
 	float ws_all = 0.0;
-	gather_window(p, n, dp, na, shift, na / 2, 0, acc, ws, ws_all);
+	vec4 sh = vec4(0.0);
+	gather_window(p, n, dp, na, shift, na / 2, 0, acc, ws, ws_all, sh);
+	vec3 v = sh.w > 1e-6 ? sh.xyz / sh.w : vec3(0.0);
 	// Edge fallback: at the edge of an object, the neighbours across the edge are rejected and the pixel is left with part of the
 	// tile's directions: a biased value that repeats every tile (a dashed line along the silhouette). There the rays are also
 	// gathered over a window two tiles wide, so every direction is found on this side of the edge, and the two results are blended
@@ -194,9 +221,12 @@ void main() {
 		vec3 acc2 = acc;
 		float ws2 = ws;
 		float ws_all2 = ws_all;
-		gather_window(p, n, dp, na, shift, na, na / 2, acc2, ws2, ws_all2);
+		vec4 sh2 = sh;
+		gather_window(p, n, dp, na, shift, na, na / 2, acc2, ws2, ws_all2, sh2);
 		if (ws2 > 0.0) {
-			gi = mix(4.0 * acc2 / ws2, gi, smoothstep(0.6, 0.9, coverage));
+			float keep = smoothstep(0.6, 0.9, coverage);
+			gi = mix(4.0 * acc2 / ws2, gi, keep);
+			v = mix(sh2.w > 1e-6 ? sh2.xyz / sh2.w : vec3(0.0), v, keep);
 		}
 	}
 
@@ -212,6 +242,7 @@ void main() {
 			ivec2 p0 = ivec2(floor(pp));
 			vec2 f = pp - vec2(p0);
 			vec4 hacc = vec4(0.0);
+			vec3 vhacc = vec3(0.0);
 			float hw = 0.0;
 			for (int k = 0; k < 4; k++) {
 				ivec2 o = ivec2(k & 1, k >> 1);
@@ -227,6 +258,7 @@ void main() {
 				float bw = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
 				float w = bw * exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 8.0);
 				hacc += w * imageLoad(hist_prev, q);
+				vhacc += w * imageLoad(dir_prev, q).xyz;
 				hw += w;
 			}
 			if (hw > 0.05) {
@@ -244,11 +276,13 @@ void main() {
 				float young = (int(P.screen.w + 0.5) & 8) != 0 ? 1.0 / hist_len : 0.0;
 				float alpha = clamp(max(P.extra.z, young) + change * P.extra.w, P.extra.z, 0.9);
 				gi_t = mix(hist, gi, alpha);
+				v = mix(vhacc / hw, v, alpha);
 			}
 		}
 	}
 	imageStore(hist_cur, p, vec4(gi_t, hist_len));
+	imageStore(dir_cur, p, vec4(v, 0.0));
 	if (!filter_on) {
-		composite(p, n, gi_t);
+		composite(p, n, gi_t, v);
 	}
 }

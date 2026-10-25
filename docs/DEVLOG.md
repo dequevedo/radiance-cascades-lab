@@ -863,3 +863,31 @@ edge fallback (`--no-edge-fix`) was 0.79 ms and the filter (`--no-denoise`) 0.39
 
 Picture check: every `--shots` view rendered with the old and the new code (the runs are deterministic: the same code twice
 differs by 0.000): mean difference 0.001 levels of 255, at most 0.07 % of the pixels by more than 3 levels.
+
+
+---
+
+# Step 17: directional bounce (normal maps in bounce light)
+
+The final pass gathered the bounce light for the flat surface (the normal rebuilt from depth), so a normal map had no effect on
+it: a stone wall lit only by the television looked like a smooth wash of light. Now the gather also keeps where that light comes
+from: the brightness-weighted mean of the ray directions, v = S1 / S0 with S0 = sum L and S1 = sum L * direction (the first two
+spherical-harmonic moments, on brightness). It is blended in time and filtered like the light itself (one more screen texture,
+two with the history), and at the composite the light of each pixel is scaled by
+
+    E(m) / E(n),  E(x) = S0 (1/4 + 1/2 v.x)
+
+where n is the flat normal the light was gathered for and m the normal with normal maps, from Godot's `normal_roughness` buffer.
+(For uniform light over the hemisphere this gives exactly pi facing it and pi/2 sideways.) Colour stays from the gather; only
+the brightness turns with the relief.
+
+To see it, the dark room's two long walls got stone-block panels with a generated, tileable normal map (40 x 20 cm blocks,
+mortar joints, a little noise), world-space triplanar.
+
+| | without | with |
+|---|---|---|
+| GPU, 1920x1080 High, still (the machine was busier than in step 16) | 4.40 / 4.46 ms | 4.44 / 4.43 ms |
+| `--flicker`, stone wall, pixels changing > 3 levels, camera moving | 4.2 % | 2.9 % |
+| entrance / cooler / spheres views | unchanged | unchanged |
+
+Memory: one more RGBA16F screen texture pair (about 33 MB at 1080p). `--no-directional` switches it off.

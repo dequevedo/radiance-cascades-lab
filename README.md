@@ -19,9 +19,11 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 
 ![Light through a tinted glass pane takes its colour](docs/readme/tinted_glass.jpg)
 
-![The dark room: Godot alone and with radiance cascades](docs/readme/dark_room_tv.jpg)
+![The dark room: Godot alone and with radiance cascades](docs/readme/television_room.jpg)
 
-![The television at three moments: the room's light follows the picture](docs/readme/tv_picture.jpg)
+![The television at three moments: the room's light follows the picture](docs/readme/tv_colours_room.jpg)
+
+![A stone wall lit only by the television: the bounce light keeps its direction, so the relief shows](docs/readme/relief.jpg)
 
 ## How it works
 
@@ -32,7 +34,8 @@ The scene is voxelized, and every frame the effect:
 3. traces short rays per pixel for sharp contact shadows, and reflections for shiny surfaces (sharp from the picture where it can, blurred from the probes elsewhere);
 4. gathers per pixel, blends with the previous frame and filters.
 
-It handles moving objects and lights, emissive surfaces, several bounces, metals, glossy plastic and tinted glass.
+It handles moving objects and lights, emissive surfaces, several bounces, normal maps in bounce light, metals, glossy plastic
+and tinted glass.
 
 Radiance Cascades: Alexander Sannikov, *Radiance Cascades: A Novel Approach to Calculating Global Illumination* (2023).
 

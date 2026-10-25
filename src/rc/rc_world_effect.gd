@@ -37,6 +37,7 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var history_aware := true # pixels with a short history (just uncovered) are filtered wider and averaged over their frames so far
 @export var bounce := 0.8 # more bounces: last frame's probe light added to every lit voxel, times this (0 = a single bounce)
 @export var bounce_full_every := 4 # with more bounces on, the whole volume is lit again every Nth frame (the light keeps bouncing)
+@export var directional := true # the bounce light keeps the direction it comes from, so normal maps react to it
 @export var sharp_reflections := true # shiny surfaces first look for their reflection in the picture itself
 @export var glass_tint := true # light through see-through surfaces takes their colour
 @export var facing := true # a voxel shows its light only to rays coming from the side its surface faces
@@ -78,6 +79,7 @@ var rays_per_frame := 0
 var _near_tex := RID()
 var _nrm: Array[RID] = [RID(), RID()]
 var _hist: Array[RID] = [RID(), RID()]
+var _dir: Array[RID] = [RID(), RID()] # per pixel: where the bounce light comes from (brightness-weighted mean direction)
 var _pp := 0
 var _frame := 0
 var _hist_valid := false
@@ -485,7 +487,7 @@ func free_resources() -> void:
 	gi_enabled = false
 	volume_ready = false
 	_free_volume()
-	for r in _pipe.values() + _shader.values() + [_sampler, _sampler_lin, _ubo, _near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _prev_color]:
+	for r in _pipe.values() + _shader.values() + [_sampler, _sampler_lin, _ubo, _near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _prev_color, _dir[0], _dir[1]]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_prev_color = RID()
@@ -555,7 +557,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	_pack_mat(proj, p)
 	_pack_mat(proj.inverse(), p)
 	_pack_mat(cam_to_world, p)
-	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0) | (32 if sharp_reflections else 0) | (64 if _prev_color_valid else 0))])
+	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0) | (32 if sharp_reflections else 0) | (64 if _prev_color_valid else 0) | (128 if directional else 0))])
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
@@ -853,7 +855,8 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["final"])
 		var final_set := UniformSetCacheRD.get_cache(_shader["final"], 0,
 			[_ubo_u(), color_u, albedo_u, depth_u, _img(12, _near_tex), _img(13, _nrm[cur]), _img(16, _nrm[1 - cur]),
-			 _img(17, _hist[1 - cur]), _img(18, _hist[cur]), _img(20, _spec_tex)])
+			 _img(17, _hist[1 - cur]), _img(18, _hist[cur]), _img(20, _spec_tex), _img(21, _dir[1 - cur]), _img(22, _dir[cur]),
+			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler, nr_tex if nr_tex.is_valid() else buffers.get_depth_layer(0)])])
 		var fpc := npc.duplicate()
 		fpc.append_array([0.0, spec_strength, 0.0, 0.0])
 		rd.compute_list_bind_uniform_set(cl, final_set, 0)
@@ -864,7 +867,8 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			rd.compute_list_add_barrier(cl)
 			var filt_set := UniformSetCacheRD.get_cache(_shader["final"], 0,
 				[_ubo_u(), color_u, albedo_u, depth_u, _img(12, _near_tex), _img(13, _nrm[cur]), _img(16, _nrm[1 - cur]),
-				 _img(17, _hist[cur]), _img(18, _hist[1 - cur]), _img(20, _spec_tex)])
+				 _img(17, _hist[cur]), _img(18, _hist[1 - cur]), _img(20, _spec_tex), _img(21, _dir[cur]), _img(22, _dir[1 - cur]),
+				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler, nr_tex if nr_tex.is_valid() else buffers.get_depth_layer(0)])])
 			fpc[4] = 1.0
 			rd.compute_list_bind_uniform_set(cl, filt_set, 0)
 			rd.compute_list_set_push_constant(cl, fpc.to_byte_array(), 32)
@@ -899,7 +903,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 func _ensure_screen_textures(size: Vector2i) -> void:
 	if size == _screen_tex_size and _near_tex.is_valid():
 		return
-	for r in [_near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex]:
+	for r in [_near_tex, _nrm[0], _nrm[1], _hist[0], _hist[1], _spec_tex, _dir[0], _dir[1]]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	var f := RDTextureFormat.new()
@@ -912,6 +916,8 @@ func _ensure_screen_textures(size: Vector2i) -> void:
 	for i in 2:
 		_nrm[i] = rd.texture_create(f, RDTextureView.new(), [])
 		_hist[i] = rd.texture_create(f, RDTextureView.new(), [])
+		_dir[i] = rd.texture_create(f, RDTextureView.new(), [])
+		rd.texture_clear(_dir[i], Color(0, 0, 0, 0), 0, 1, 0, 1)
 		rd.texture_clear(_nrm[i], Color(0, 0, 0, 0), 0, 1, 0, 1)
 		rd.texture_clear(_hist[i], Color(0, 0, 0, 0), 0, 1, 0, 1)
 	_screen_tex_size = size

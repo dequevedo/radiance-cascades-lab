@@ -488,14 +488,15 @@ func _flicker(report: PackedStringArray) -> void:
 		"entrance": [Vector3(4.0, 1.6, 4.2), Vector3(-2.5, 1.3, -1.8)],
 		"cooler": [Vector3(4.55, 1.45, -3.15), Vector3(5.3, 0.25, -2.2)],
 		"spheres": [Vector3(-11.3, 1.3, -3.25), Vector3(-11.3, 0.75, -4.1)],
+		"relief": [Vector3(-14.2, 1.5, -3.7), Vector3(-17.6, 1.1, -4.75)],
 	}
 	var base_aa := aa_mode # the reference "godot" frames use the same anti-aliasing as the run (--aa=...)
 	var base := {"jitter": effect_world.jitter, "edge_fix": effect_world.edge_fix, "denoise": effect_world.denoise,
 		"far_every": effect_world.far_every, "temporal_adaptive": effect_world.temporal_adaptive, "temporal_alpha": effect_world.temporal_alpha,
 		"temporal_noise_floor": effect_world.temporal_noise_floor, "temporal_min_change": effect_world.temporal_min_change,
 		"bounce": effect_world.bounce, "history_aware": effect_world.history_aware,
-		"sharp_reflections": effect_world.sharp_reflections}
-	var configs := [["godot", {}], ["now", {}], ["no_history_aware", {"history_aware": false}], ["no_bounce", {"bounce": 0.0}], ["no_sharp", {"sharp_reflections": false}]]
+		"sharp_reflections": effect_world.sharp_reflections, "directional": effect_world.directional}
+	var configs := [["godot", {}], ["now", {}], ["no_history_aware", {"history_aware": false}], ["no_bounce", {"bounce": 0.0}], ["no_sharp", {"sharp_reflections": false}], ["no_directional", {"directional": false}]]
 	for view in views:
 		for cfg in configs:
 			for k in base:
@@ -594,6 +595,7 @@ func _run() -> void:
 	effect_world.facing = not user_args.has("--no-facing")
 	effect_world.glass_tint = not user_args.has("--no-glass-tint")
 	effect_world.sharp_reflections = not user_args.has("--no-sharp-reflections")
+	effect_world.directional = not user_args.has("--no-directional")
 	effect_world.jitter = not user_args.has("--no-jitter")
 	effect_world.edge_fix = not user_args.has("--no-edge-fix")
 	effect_world.denoise = not user_args.has("--no-denoise")
@@ -635,6 +637,16 @@ func _run() -> void:
 			_set_mode(mode)
 			await _frames(40)
 			await _shot("mat_%s.png" % mode)
+		# The stone panels of the dark room, lit only by the television's bounce light (directional bounce).
+		anim_t = 4.0
+		for v in [["relief_wall", Vector3(-14.2, 1.5, -3.7), Vector3(-17.6, 1.1, -4.75)],
+				["relief_room", Vector3(-13.4, 1.6, -3.25), Vector3(-17.8, 0.9, -3.25)]]:
+			cam.position = v[1]
+			cam.look_at(v[2])
+			for mode in ["world", "world_gi"]:
+				_set_mode(mode)
+				await _frames(50)
+				await _shot("%s_%s.png" % [v[0], mode])
 		# The tinted glass pane: the light behind it takes its colour.
 		_pose("glass")
 		for mode in ["world", "world_gi"]:
