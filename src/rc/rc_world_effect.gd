@@ -46,6 +46,13 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var solid_fill := true # fill the inside of closed meshes (else objects are hollow shells and probes inside them leak)
 @export var spec_strength := 1.0 # glossy reflections from the probes (Fresnel-weighted, blurred)
 @export var emission_scale := 1.0 # emissive surfaces light the scene, times this
+@export var fog := false # a height fog that scatters the bounce light (glows round neon signs and lit windows)
+@export var fog_density := 0.03 # per metre, at fog_base
+@export var fog_height := 6.0 # the density halves every ~0.7 x this many metres above fog_base
+@export var fog_base := 0.0
+@export var fog_distance := 60.0 # the fog is marched up to this far
+@export var fog_steps := 24
+@export var fog_brightness := 1.0
 @export var follow_step := 0.0 # > 0: the volume follows the camera, moving in steps of this many metres
 var recentres := 0 # how many times the volume has moved
 var recentre_ms := 0.0 # CPU time of the last move (recording the GPU work)
@@ -111,7 +118,8 @@ var _vert_buf := RID()
 var _idx_buf := RID()
 # Far cascades kept between frames.
 var _probe_keep := RID()
-var _amb := RID() # ambient cube per probe of cascade 0 (6 faces side by side in x)
+var _amb := RID()
+var _amb_iso := RID() # per probe of cascade 0: the average light arriving there (for the fog) # ambient cube per probe of cascade 0 (6 faces side by side in x)
 var _vox_emit := RID()
 var _vox_mat := RID() # per voxel: metallic, roughness
 var _vox_base := RID() # per voxel: base colour (metals reflect with it)
@@ -531,7 +539,7 @@ func _init_rd() -> void:
 	rd = RenderingServer.get_rendering_device()
 	if rd == null:
 		return
-	for n in ["voxelize", "voxelize_mesh", "fill_solid", "copy_color", "voxelize_boxes", "inject", "ambient", "cascade3d", "gather3d", "nearfield", "final", "probe_weights"]:
+	for n in ["voxelize", "voxelize_mesh", "fill_solid", "copy_color", "fog", "voxelize_boxes", "inject", "ambient", "cascade3d", "gather3d", "nearfield", "final", "probe_weights"]:
 		_shader[n] = _compile(n)
 		if (_shader[n] as RID).is_valid():
 			_pipe[n] = rd.compute_pipeline_create(_shader[n])
@@ -562,11 +570,12 @@ func free_resources() -> void:
 
 func _free_volume() -> void:
 	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1],
-			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint]:
+			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _amb_iso, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_probe_keep = RID()
 	_amb = RID()
+	_amb_iso = RID()
 	_vox_emit = RID()
 	_vox_mat = RID()
 	_vox_base = RID()
@@ -686,6 +695,7 @@ func rebuild() -> void:
 	_vox_dyn_emit = _tex3d(dims, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	var g0 := _grid(probe_spacing)
 	_amb = _tex3d(Vector3i(g0.x * 6, g0.y, g0.z), RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
+	_amb_iso = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	_pw_lo = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	_pw_hi = _tex3d(g0, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
 	var lights := _lights.duplicate()
@@ -744,6 +754,7 @@ func _recentre(new_min: Vector3) -> void:
 	_write_ubo(Projection.IDENTITY, Projection.IDENTITY, Vector2i(1, 1))
 	_voxelize_static()
 	rd.texture_clear(_amb, Color(0, 0, 0, 0), 0, 1, 0, 1)
+	rd.texture_clear(_amb_iso, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_dyn, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	rd.texture_clear(_vox_dyn_emit, Color(0, 0, 0, 0), 0, 1, 0, 1)
 	_keep_valid = false
@@ -936,10 +947,10 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			rd.compute_list_bind_compute_pipeline(cl, _pipe["cascade3d"])
 		inp = out_t
 		outi = 1 - outi
-	if bounce > 0.0 and _pipe.has("ambient"):
-		# Ambient cubes from cascade 0, for the next frame's injection (more bounces).
+	if (bounce > 0.0 or fog) and _pipe.has("ambient"):
+		# Ambient cubes from cascade 0, for the next frame's injection (more bounces) and for the fog.
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["ambient"])
-		var aset := UniformSetCacheRD.get_cache(_shader["ambient"], 0, [_ubo_u(), _img(10, inp), _img(22, _amb)])
+		var aset := UniformSetCacheRD.get_cache(_shader["ambient"], 0, [_ubo_u(), _img(10, inp), _img(22, _amb), _img(23, _amb_iso)])
 		var g0 := _grid(probe_spacing)
 		rd.compute_list_bind_uniform_set(cl, aset, 0)
 		rd.compute_list_set_push_constant(cl, PackedFloat32Array([A0, 0.0, 0.0, 0.0]).to_byte_array(), 16)
@@ -1003,6 +1014,16 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			rd.compute_list_end()
 			_prev_color_valid = true
 		rd.capture_timestamp("RC final gather")
+		if fog and _pipe.has("fog"):
+			cl = rd.compute_list_begin()
+			rd.compute_list_bind_compute_pipeline(cl, _pipe["fog"])
+			rd.compute_list_bind_uniform_set(cl, UniformSetCacheRD.get_cache(_shader["fog"], 0,
+				[_ubo_u(), depth_u, color_u, _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 10, [_sampler_lin, _amb_iso])]), 0)
+			var fog_pc := PackedFloat32Array([fog_density, fog_height, fog_base, fog_distance, fog_steps, _frame % 1024, fog_brightness, 0.0])
+			rd.compute_list_set_push_constant(cl, fog_pc.to_byte_array(), 32)
+			rd.compute_list_dispatch(cl, ceili(size.x / 8.0), ceili(size.y / 8.0), 1)
+			rd.compute_list_end()
+			rd.capture_timestamp("RC fog")
 		_prev_vp = view_proj * cam_xf.inverse()
 		_pp = 1 - _pp
 		_frame += 1

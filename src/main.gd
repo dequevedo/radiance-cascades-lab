@@ -77,15 +77,25 @@ func _ready() -> void:
 	effect_world.probe_spacing = 0.35 if high else 0.5
 	effect_world.near_dirs = 8 if high else 6
 	effect_world.temporal_alpha = 0.2 if high else 0.25
+	if user_args.has("--quality=low"):
+		# The Low preset (the panel's "Low"): 25 cm voxels, probes 1 m apart, 4 x 4 directions per pixel tile.
+		effect_world.voxel_size = 0.25
+		effect_world.probe_spacing = 1.0
+		effect_world.near_dirs = 4
+		effect_world.temporal_alpha = 0.35
 	if city_mode:
 		# The city: a 64 x 24 x 64 m volume that follows the camera in 8 m steps (the spacing of the top cascade's probes, so
 		# every probe grid stays where it was), 25 cm voxels, probes 1 m apart.
-		effect_world.voxel_size = 0.25
+		effect_world.voxel_size = 0.4 if user_args.has("--quality=low") else 0.25
 		effect_world.probe_spacing = 1.0
 		effect_world.interval0 = 1.0
 		effect_world.near_range = 1.0
 		effect_world.temporal_alpha = 0.25
 		effect_world.follow_step = CITY.FOLLOW_STEP
+		effect_world.fog = not user_args.has("--no-fog")
+		effect_world.fog_density = 0.05
+		effect_world.fog_height = 2.5
+		effect_world.fog_brightness = 1.6
 	var vs: Vector3 = scene_script.VOLUME_SIZE
 	effect_world.dims = Vector3i(ceili(vs.x / effect_world.voxel_size), ceili(vs.y / effect_world.voxel_size), ceili(vs.z / effect_world.voxel_size))
 	effect_world.volume_min = scene_script.VOLUME_MIN
@@ -670,6 +680,8 @@ func _run() -> void:
 	effect_world.glass_tint = not user_args.has("--no-glass-tint")
 	effect_world.sharp_reflections = not user_args.has("--no-sharp-reflections")
 	effect_world.directional = not user_args.has("--no-directional")
+	if user_args.has("--fog"):
+		effect_world.fog = true
 	effect_world.jitter = not user_args.has("--no-jitter")
 	effect_world.edge_fix = not user_args.has("--no-edge-fix")
 	effect_world.denoise = not user_args.has("--no-denoise")
@@ -773,7 +785,7 @@ func _run() -> void:
 					await _frames(24)
 					await _shot("shop_%s_d%d_%s.png" % [pose, int(dolly_s), mode])
 	if user_args.has("--bench"):
-		_pose("aisle")
+		_pose("avenue" if city_mode else "aisle")
 		anim_auto = not user_args.has("--still")
 		await _bench("GI off", "off", 200, report)
 		await _bench("screen-space RC", "ss", 200, report)

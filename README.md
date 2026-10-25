@@ -25,6 +25,18 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 
 ![A stone wall lit only by the television: the bounce light keeps its direction, so the relief shows](docs/readme/relief.jpg)
 
+## The city
+
+`--city` builds a night city procedurally: blocks of shops and flats, a plaza, a market, a park, wet streets, lamps, trees,
+parked cars, traffic lights, bus stops and neon signs, and a car whose headlights are spot lights. The GI volume is much smaller
+than the city and follows the camera.
+
+![The procedural city from above](docs/readme/city_rooftops.jpg)
+
+![A wet street at night](docs/readme/city_street.jpg)
+
+![The market](docs/readme/city_market.jpg)
+
 ## How it works
 
 The scene is voxelized, and every frame the effect:
@@ -34,8 +46,8 @@ The scene is voxelized, and every frame the effect:
 3. traces short rays per pixel for sharp contact shadows, and reflections for shiny surfaces (sharp from the picture where it can, blurred from the probes elsewhere);
 4. gathers per pixel, blends with the previous frame and filters.
 
-It handles moving objects and lights, emissive surfaces, several bounces, normal maps in bounce light, metals, glossy plastic
-and tinted glass.
+It handles moving objects and lights (omni, spot, sun), emissive surfaces, several bounces, normal maps in bounce light,
+metals, glossy plastic, tinted glass, a sky with a horizon and a fog that scatters the bounce light.
 
 Radiance Cascades: Alexander Sannikov, *Radiance Cascades: A Novel Approach to Calculating Global Illumination* (2023).
 
@@ -45,6 +57,7 @@ Godot 4.7 and a GPU with Vulkan compute support:
 
 ```sh
 godot --path . --rendering-driver vulkan
+godot --path . --rendering-driver vulkan -- --city
 ```
 
 | Input | Action |
@@ -59,17 +72,20 @@ godot --path . --rendering-driver vulkan
 
 ## Performance
 
-RX 9070 XT, 1920x1080, High preset:
+RX 9070 XT, 1920x1080, nothing moving:
 
-| | ms (FPS) |
+| | Godot + radiance cascades, ms (FPS) |
 |---|---|
-| Godot alone | 0.89 (1120) |
-| Godot + radiance cascades | 4.05 (247) |
-| the same, with the dolly and its lamp moving | 5.42 (185) |
+| Rooms, High (10 cm voxels) | 4.61 (217) |
+| Rooms, Low (25 cm voxels) | 2.85 (351) |
+| City, High (25 cm voxels, 64 x 24 x 64 m) | 6.28 (159) |
+| City, Low (40 cm voxels) | 3.25 (308) |
+
+When the volume follows the camera into new ground, that frame takes about 12 ms.
 
 ## Limits
 
-- One voxel volume, fixed in place: no large open worlds.
+- One voxel volume: it follows the camera, but what is outside it gets no bounce light, and moving it costs one slow frame.
 - Moving objects are voxelized as boxes.
 - Sharp reflections only show what is on screen; the rest is blurred.
 

@@ -467,6 +467,7 @@ func _build_scene(body: VBoxContainer) -> void:
 			"How much the neon signs, the lit windows and the shop windows light the street through the bounce.")
 		_slider(body, "Glossy reflections", 0.0, 2.0, 0.05, effect.spec_strength, func(v): effect.spec_strength = v,
 			"Reflections on the cars' paint and the fountain's water.")
+		_fog_controls(body)
 		_label(body, "The GI volume (64 x 24 x 64 m) follows the camera in 8 m steps.", DIM)
 		return
 	_slider(body, "Ceiling lights", 0.0, 3.0, 0.05, shop.ceiling_scale, func(v): shop.ceiling_scale = v,
@@ -487,11 +488,21 @@ func _build_scene(body: VBoxContainer) -> void:
 		"Godot's own sharp reflections of what is on screen (shiny floors, chrome). They do not see what is off screen.")
 	_slider(body, "Glowing surfaces", 0.0, 4.0, 0.1, effect.emission_scale, func(v): effect.emission_scale = v,
 		"How much the TV screen and the neon sign in the corridor light the scene (they have no lamp: only the bounce carries their light).")
+	_fog_controls(body)
 	_slider(body, "Dolly lamp", 0.0, 20.0, 0.5, shop.dolly_lamp.light_energy, func(v): shop.dolly_lamp.light_energy = v,
 		"The work lamp on the rolling dolly.", "%.1f")
 	_check(body, "Dolly rolls", main.anim_auto, func(v): main.anim_auto = v,
 		"The dolly with cartons moves along the central aisle (Z / X move it by hand when stopped).")
 	_label(body, "Space pauses the dolly; with 'Dolly rolls' off, Z / X move it by hand.", DIM)
+
+
+func _fog_controls(body: VBoxContainer) -> void:
+	_check(body, "Fog", effect.fog, func(v): effect.fog = v,
+		"A height fog that scatters the bounce light: glows in the air round neon signs, lit windows and the television.")
+	_slider(body, "Fog density", 0.0, 0.2, 0.005, effect.fog_density, func(v): effect.fog_density = v,
+		"How thick the fog is near the ground (per metre).", "%.3f")
+	_slider(body, "Fog brightness", 0.0, 4.0, 0.05, effect.fog_brightness, func(v): effect.fog_brightness = v,
+		"How much light the fog scatters towards the camera.")
 
 
 func _build_object(body: VBoxContainer) -> void:

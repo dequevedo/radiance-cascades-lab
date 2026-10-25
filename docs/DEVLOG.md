@@ -891,3 +891,46 @@ mortar joints, a little noise), world-space triplanar.
 | entrance / cooler / spheres views | unchanged | unchanged |
 
 Memory: one more RGBA16F screen texture pair (about 33 MB at 1080p). `--no-directional` switches it off.
+
+
+---
+
+# Step 18: a city, a volume that follows the camera, fog, spot lights, a sky
+
+**Lights.** Spot lights are lit like Godot lights them (its cone falloff); each light is 16 floats now. Up to 64 lights per
+frame: with more in the scene, the directional ones and those whose reach touches the volume, nearest to its centre first.
+**Sky.** Rays that leave the volume see a zenith / horizon / ground gradient instead of one sky colour.
+
+**Voxelizer for large scenes.** Merged meshes with vertex colours keep each object's colour in the voxels (the colour of a
+triangle is the mean of its three vertices); the vertex, index and colour buffers go to the GPU only when the scene changes;
+surfaces whose bounds miss the volume are not dispatched. A mesh tagged `rc_closed` skips the closed-mesh check (made of closed
+primitives by construction; the check is slow on a 30,000-triangle block).
+
+**The city (`--city`, `src/city_scene.gd`).** 5 x 5 blocks of 34 m with 10 m streets: shops (lit windows with shelves of goods,
+striped awnings, neon signs, blade signs) and flats (lit and dark windows, sills, flower boxes, air conditioners, balconies,
+water tanks), a plaza (fountain, benches, string lights), a market (stalls of fruit, hanging bulbs), a park, wet asphalt
+(roughness 0.32, so the sharp reflections show the neon), lamps, trees, parked cars, traffic lights, bus stops with glass, and a
+car with two spot-light headlights driving round the plaza. One mesh per block per material: 678,516 triangles, built in
+0.6-0.8 s.
+
+**A volume that follows the camera.** 64 x 24 x 64 m, 25 cm voxels, probes 1 m apart. When the camera is more than 8 m (the
+spacing of the top cascade's probes, so every probe grid stays on its grid) from the volume's centre, the volume moves under it:
+its voxels are made again from the meshes that reach it and lit from scratch, the probe light kept between frames is dropped.
+`--follow` walks 120 m down an avenue and keeps every frame's time:
+
+| | the frame of a move |
+|---|---|
+| first version | ~30 ms |
+| big flat areas cut into 4 m tiles (the voxelizer gives each triangle one thread: a 220 m road triangle was one thread walking 65,000 voxels) | ~11.6 ms |
+
+The other frames: 6.0 ms median at 1600x900.
+
+**Fog.** A height fog marched per pixel (24 steps, jittered), scattering towards the camera the average light arriving at the
+probes of cascade 0 (one more small 3D texture written by the ambient pass): glows round neon signs and shop windows, a sodium
+haze along the street. 0.15 ms. On by default in the city; `--fog` in the rooms, a checkbox in the Scene tab.
+
+**Presets measured** (1920x1080, nothing moving): rooms High 4.61 ms, rooms Low 2.85 ms; city High 6.28 ms (cascades 2.9 ms),
+city Low (40 cm voxels) 3.25 ms.
+
+**Tried and dropped:** half precision (`mediump`) in the final gather: no measurable gain (the pass is bound by texture reads,
+not arithmetic), and the machine was too busy for a clean A/B.

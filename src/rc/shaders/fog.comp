@@ -1,0 +1,63 @@
+// Fog that takes the bounce light: per pixel, the view ray is marched through a height fog up to the surface (or a maximum
+// distance), and at every step the fog scatters towards the camera the light arriving there from all around, read from the
+// probes of cascade 0 (their average, written by ambient.comp). A neon sign or a lit shop window gets a glow in the air
+// around it, a dark street stays dark. Then the picture is dimmed by what the fog absorbs and the scattered light is added.
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 8) uniform sampler2D depth_tex;
+layout(set = 0, binding = 9, rgba16f) uniform restrict image2D color_img;
+layout(set = 0, binding = 10) uniform sampler3D iso_tex; // per probe of cascade 0: the average light arriving there
+
+layout(push_constant, std430) uniform Fog {
+	vec4 a; // density (1/m) at the base, height falloff (m), base height (m), maximum distance (m)
+	vec4 b; // steps, frame (for the jitter), brightness of the scattered light, 0
+} pc;
+
+//#include screen.inc
+
+float hash12(vec2 q) {
+	vec3 p3 = fract(vec3(q.xyx) * 0.1031);
+	p3 += dot(p3, p3.yzx + 33.33);
+	return fract((p3.x + p3.y) * p3.z);
+}
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(p, ivec2(P.screen.xy)))) {
+		return;
+	}
+	if (P.screen.z > 0.0 && float(p.x) < P.screen.z * P.screen.x) {
+		return; // split view: the left side shows Godot alone
+	}
+	float d = texelFetch(depth_tex, p, 0).r;
+	bool sky = d <= SKY_DEPTH;
+	vec3 vpos = view_pos(p, sky ? 0.5 : d); // for the sky, any point along the pixel's ray gives its direction
+	vec3 cam = (P.cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+	vec3 dir = normalize(mat3(P.cam_to_world) * vpos);
+	float dist = sky ? pc.a.w : min(length(vpos), pc.a.w);
+	int steps = int(pc.b.x + 0.5);
+	float ds = dist / float(steps);
+	float t = ds * hash12(vec2(p) + pc.b.y * 13.7); // a new start every frame: the temporal AA smooths the steps away
+	ivec3 grid = grid_of(P.misc.x);
+	vec3 extent = vec3(grid) * P.misc.x;
+	vec3 vol_lo = P.vol_min.xyz;
+	vec3 vol_hi = P.vol_min.xyz + P.vol_dims.xyz * P.vol_min.w;
+	vec3 inscatter = vec3(0.0);
+	float T = 1.0;
+	for (int i = 0; i < steps; i++) {
+		vec3 pos = cam + dir * t;
+		float sigma = pc.a.x * exp(-max(pos.y - pc.a.z, 0.0) / pc.a.y);
+		vec3 li = P.sky_horizon.rgb;
+		if (all(greaterThanEqual(pos, vol_lo)) && all(lessThan(pos, vol_hi))) {
+			li = textureLod(iso_tex, (pos - P.vol_min.xyz) / extent, 0.0).rgb;
+		}
+		float a = 1.0 - exp(-sigma * ds);
+		inscatter += T * a * li;
+		T *= 1.0 - a;
+		t += ds;
+	}
+	vec4 col = imageLoad(color_img, p);
+	col.rgb = col.rgb * T + inscatter * pc.b.z;
+	imageStore(color_img, p, col);
+}
