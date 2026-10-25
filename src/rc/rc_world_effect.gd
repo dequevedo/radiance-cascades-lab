@@ -40,6 +40,8 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var bounce := 0.8 # more bounces: last frame's probe light added to every lit voxel, times this (0 = a single bounce)
 @export var bounce_full_every := 4 # with more bounces on, the whole volume is lit again every Nth frame (the light keeps bouncing)
 @export var directional := true # the bounce light keeps the direction it comes from, so normal maps react to it
+@export var pixel_roughness := true # roughness per pixel from Godot's normal_roughness buffer (roughness textures: puddles)
+@export var voxel_reflections := true # where the picture does not hold the reflection, trace it through the voxels
 @export var sharp_reflections := true # shiny surfaces first look for their reflection in the picture itself
 @export var glass_tint := true # light through see-through surfaces takes their colour
 @export var facing := true # a voxel shows its light only to rays coming from the side its surface faces
@@ -123,6 +125,7 @@ var _amb_iso := RID() # per probe of cascade 0: the average light arriving there
 var _vox_emit := RID()
 var _vox_mat := RID() # per voxel: metallic, roughness
 var _vox_base := RID() # per voxel: base colour (metals reflect with it)
+var _has_nr := false # Godot gave us its normal_roughness buffer this frame
 var _prev_color := RID() # last frame's finished picture (sharp reflections read it: a metal in it already shows its reflection)
 var _prev_color_valid := false
 var _prev_color_size := Vector2i.ZERO
@@ -678,7 +681,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	_pack_mat(proj, p)
 	_pack_mat(proj.inverse(), p)
 	_pack_mat(cam_to_world, p)
-	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0) | (32 if sharp_reflections else 0) | (64 if _prev_color_valid else 0) | (128 if directional else 0) | (256 if follow_step > 0.0 else 0))])
+	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0) | (32 if sharp_reflections else 0) | (64 if _prev_color_valid else 0) | (128 if directional else 0) | (256 if follow_step > 0.0 else 0) | (512 if (pixel_roughness and _has_nr) else 0) | (1024 if voxel_reflections else 0))])
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
@@ -1029,6 +1032,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		cl = rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["nearfield"])
 		var nr_tex := buffers.get_texture("forward_clustered", "normal_roughness")
+		_has_nr = nr_tex.is_valid()
 		_ensure_prev_color(size)
 		var near_set := UniformSetCacheRD.get_cache(_shader["nearfield"], 0,
 			[_ubo_u(), _img(1, _vox_albedo), depth_u, color_u, _img(10, inp), _img(12, _near_tex), _img(13, _nrm[cur]), _img(17, _spec_tex),

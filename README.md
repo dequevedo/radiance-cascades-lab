@@ -15,7 +15,7 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 
 ![The materials room: Godot alone and with radiance cascades](docs/readme/materials.jpg)
 
-![Chrome and gold spheres reflecting the room](docs/readme/metals.jpg)
+![Chrome and gold spheres reflecting the room](docs/readme/metal_reflections.jpg)
 
 ![Light through a tinted glass pane takes its colour](docs/readme/tinted_glass.jpg)
 
@@ -39,13 +39,16 @@ than the city and follows the camera.
 
 ![Cars with headlights on wet, textured asphalt](docs/readme/city_traffic.jpg)
 
+![Puddles reflecting the street](docs/readme/city_puddles.jpg)
+
 ## How it works
 
 The scene is voxelized, and every frame the effect:
 
 1. lights the voxels (lamps with shadows, glowing surfaces, last frame's bounce);
 2. traces the probe cascades, coarsest to finest, each merging into the one below;
-3. traces short rays per pixel for sharp contact shadows, and reflections for shiny surfaces (sharp from the picture where it can, blurred from the probes elsewhere);
+3. traces short rays per pixel for sharp contact shadows, and reflections for shiny surfaces: from the picture where it holds
+   them, through the voxels where it does not, from the probes for the rest, blurred by each pixel's roughness;
 4. gathers per pixel, blends with the previous frame and filters.
 
 It handles moving objects and lights (omni, spot, sun), emissive surfaces, several bounces, normal maps in bounce light,
@@ -91,7 +94,7 @@ When the volume follows the camera into new ground, that frame takes about 12 ms
 
 - One voxel volume: it follows the camera, but what is outside it gets no bounce light, and moving it costs one slow frame.
 - Moving objects are voxelized as boxes.
-- Sharp reflections only show what is on screen; the rest is blurred.
+- Off-screen reflections are as blocky as the voxels.
 
 Every step, with its measurements, is in [docs/DEVLOG.md](docs/DEVLOG.md).
 

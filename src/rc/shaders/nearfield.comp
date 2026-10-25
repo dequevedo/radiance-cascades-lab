@@ -142,6 +142,36 @@ vec3 probe_blend_dir(vec3 pw, vec3 nw, vec3 d, int a0) {
 	return acc;
 }
 
+// A reflection traced through the voxels (for what the picture does not show: behind the camera, behind something, off the
+// edges): the first surface along the ray, as blocky as the voxels but sharper than the probes. rgb and how much was hit.
+vec4 voxel_reflection(vec3 o, vec3 d) {
+	float vs = P.vol_min.w;
+	vec3 extent = P.vol_dims.xyz * vs;
+	vec3 L = vec3(0.0);
+	vec3 Tc = vec3(1.0);
+	float T = 1.0;
+	float t = vs * 1.5;
+	for (int i = 0; i < 56 && T > 0.03; i++) {
+		vec3 pos = o + d * t;
+		vec3 uvw = (pos - P.vol_min.xyz) / extent;
+		if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
+			break;
+		}
+		float step_len = vs * (0.8 + float(i) * 0.06);
+		Tc *= glass_filter(pos, uvw, step_len);
+		float occ = max(textureLod(occ_tex, uvw, 0.0).a, dyn_occ(pos, uvw));
+		if (occ > 0.01) {
+			vec4 r = textureLod(rad_tex, uvw, 0.0);
+			vec3 surf = r.a > 0.01 ? r.rgb / r.a : vec3(0.0);
+			float a = clamp(occ * OCC_GAIN, 0.0, 1.0);
+			L += T * Tc * a * min(surf, vec3(P.tune.z)) * facing_weight(uvw, d);
+			T *= 1.0 - a;
+		}
+		t += step_len;
+	}
+	return vec4(L, 1.0 - T);
+}
+
 // A sharp reflection from the picture itself: the mirror ray is marched in view space until it passes behind what the depth
 // buffer shows, and the colour there is the reflection. rgb, and how much to trust it (0 = not found: off screen, hidden,
 // or pointing back at the camera). Rough surfaces keep the probes' blurred reflection instead.
@@ -300,6 +330,15 @@ void main() {
 	}
 	float metallic = m.a > 0.5 ? m.r : 0.0;
 	float rough = m.a > 0.5 ? m.g : 1.0;
+	// Roughness per pixel, from Godot's normal_roughness buffer: it has the roughness textures (the asphalt's puddles), where a
+	// voxel has one value per surface. Godot keeps it in [0, 127/255] and flips it for moving objects.
+	if ((int(P.screen.w + 0.5) & 512) != 0) {
+		float rw = texelFetch(smooth_tex, p, 0).a;
+		if (rw > 0.5) {
+			rw = 1.0 - rw;
+		}
+		rough = clamp(rw / (127.0 / 255.0), 0.0, 1.0);
+	}
 	vec3 spec = vec3(0.0);
 	if (rough < 0.85) {
 		vec3 cam = (P.cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
@@ -315,12 +354,36 @@ void main() {
 		vec3 base = textureLod(base_tex, muvw, 0.0).rgb;
 		vec3 f0 = mix(vec3(0.04), base, metallic);
 		vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - clamp(dot(ns, v), 0.0, 1.0), 5.0);
-		vec3 refl = probe_blend_dir(pw, nw, r, a0);
-		if ((int(P.screen.w + 0.5) & 32) != 0 && rough < 0.45) {
-			mat3 to_view = transpose(mat3(P.cam_to_world));
-			vec4 sr = screen_reflection(vpos, to_view * ns, normalize(to_view * r), j0);
-			refl = mix(refl, sr.rgb, sr.a * (1.0 - smoothstep(0.1, 0.45, rough)));
+		// Rough surfaces blur their reflection: the rays leave in a cone round the mirror direction, as wide as roughness^2 (the
+		// width of the GGX lobe). The probes, the voxels and the picture are read along one direction of that cone, a new one
+		// every frame, so the anti-aliasing averages the cone over a few frames.
+		int flags = int(P.screen.w + 0.5);
+		float spread = rough * rough * 0.9;
+		vec3 t1 = normalize(cross(r, abs(r.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+		vec3 t2 = cross(r, t1);
+		float ang = hash12(seed + 5.3) * 6.2831853;
+		float rad_j = sqrt(hash12(seed + 7.9));
+		vec3 rj = normalize(r + (t1 * cos(ang) + t2 * sin(ang)) * spread * rad_j);
+		if (dot(rj, ns) < 0.05) {
+			rj = r;
 		}
+		vec3 refl = probe_blend_dir(pw, nw, rj, a0);
+		// On screen: the picture itself (sharpest). Off screen: through the voxels (sharper than the probes, as blocky as the
+		// voxels), only for smooth surfaces and only where the picture did not have it.
+		float found = 0.0;
+		vec3 sharp = vec3(0.0);
+		if ((flags & 32) != 0 && rough < 0.55) {
+			mat3 to_view = transpose(mat3(P.cam_to_world));
+			vec4 sr = screen_reflection(vpos, to_view * ns, normalize(to_view * rj), j0);
+			sharp = sr.rgb;
+			found = sr.a * (1.0 - smoothstep(0.3, 0.55, rough));
+		}
+		if ((flags & 1024) != 0 && rough < 0.35 && found < 0.95) {
+			vec4 vr = voxel_reflection(pw + nw * P.vol_min.w * 0.5, rj);
+			float w = vr.a * (1.0 - smoothstep(0.2, 0.35, rough));
+			refl = mix(refl, vr.rgb, w);
+		}
+		refl = mix(refl, sharp, found);
 		spec = fresnel * refl * mix(1.0, 0.3, rough / 0.85);
 	}
 	imageStore(spec_img, p, vec4(spec, metallic));

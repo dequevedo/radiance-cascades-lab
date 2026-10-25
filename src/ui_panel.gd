@@ -415,6 +415,13 @@ func _build_gi(body: VBoxContainer) -> void:
 		"At an object's edge, gather the rays from a window twice as wide, so no dashed line appears along the silhouette. About 0.5 ms at 1080p.")
 	_check(body, "Edge-aware filter", effect.denoise, func(v): effect.denoise = v,
 		"Smooths the bounce light over 7 x 7 pixels of the same surface (removes the fine grid of the per-pixel directions). About 0.4 ms at 1080p.")
+	_heading(body, "Reflections")
+	_check(body, "Sharp reflections from the picture", effect.sharp_reflections, func(v): effect.sharp_reflections = v,
+		"Shiny surfaces first look for their reflection in the picture itself (last frame's finished picture).")
+	_check(body, "Off-screen reflections through the voxels", effect.voxel_reflections, func(v): effect.voxel_reflections = v,
+		"Where the picture does not hold the reflection, smooth surfaces trace it through the voxels (blocky, but sharper than the probes).")
+	_check(body, "Roughness per pixel", effect.pixel_roughness, func(v): effect.pixel_roughness = v,
+		"Read each pixel's roughness from Godot (roughness textures: puddles). Off = one roughness per surface, from the voxels.")
 	_heading(body, "Performance")
 	_check(body, "Re-light only what changed", effect.inject_partial, func(v): effect.inject_partial = v,
 		"Direct light is injected again only around lights that changed and around moving objects. Off = the whole volume, every frame.")

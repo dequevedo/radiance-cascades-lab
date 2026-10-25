@@ -234,11 +234,11 @@ func _asphalt_textures() -> Array:
 			var g := g_img.get_pixel(x, y).r
 			var co := c_img.get_pixel(x, y).r
 			var crack := 1.0 - smoothstep(0.0, 0.06, k_img.get_pixel(x, y).r) # 1 in the thin lines between cells
-			var wet := smoothstep(0.58, 0.66, p_img.get_pixel(x, y).r)
+			var wet := smoothstep(0.5, 0.58, p_img.get_pixel(x, y).r)
 			h[y * N + x] = g * 0.25 - crack * 0.6 - wet * 0.15
 			var v := 0.78 + 0.3 * (g - 0.5) + 0.25 * (co - 0.5) - crack * 0.35
 			alb.set_pixel(x, y, Color(v, v, v * 1.02))
-			rough.set_pixel(x, y, Color.from_hsv(0, 0, lerpf(0.55 + 0.2 * (g - 0.5), 0.06, wet)))
+			rough.set_pixel(x, y, Color.from_hsv(0, 0, lerpf(0.38 + 0.16 * (g - 0.5), 0.05, wet)))
 	var nrm := Image.create(N, N, false, Image.FORMAT_RGB8)
 	for y in N:
 		for x in N:

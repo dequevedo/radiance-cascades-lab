@@ -1008,3 +1008,23 @@ City with the traffic moving, 1920x1080: 8.76 -> 7.18 ms (cascades 3.73 -> 3.21 
 checker floor has vertex colours, and its voxels used to get an average colour converted from sRGB, darker than the floor
 Godot draws (Godot reads these vertex colours as linear). Now they match, so more light bounces off the floor (about 5 levels
 of 255 in the store's views; the rooms without vertex colours did not change).
+
+
+---
+
+# Step 22: reflections: roughness per pixel, blur by roughness, off screen through the voxels
+
+- **Roughness per pixel.** The reflections took the roughness of the voxel under the pixel: one value per surface, so the
+  asphalt's puddles (a roughness texture) did not exist for them. They now read it from Godot's `normal_roughness` buffer (kept
+  in [0, 127/255] and flipped for moving objects). The asphalt became damp (0.38) with mirror-like puddles (0.05).
+- **Blur by roughness.** The reflection's direction is jittered every frame inside a cone as wide as roughness^2 (the GGX lobe);
+  the anti-aliasing averages it over a few frames. Gold (0.35) is now satin, chrome (0.08) stays sharp. One direction a frame:
+  three directions for the probes cost 0.3 ms more in the city for little.
+- **Off screen through the voxels.** Where the picture does not hold the reflection (behind the camera, behind something, off the
+  edges), smooth surfaces (roughness below 0.35) march the voxels along it: the first surface's light, with glass tint and the
+  one-sided light, up to about 140 voxels away. As blocky as the voxels, much sharper than the probes: the chrome sphere now
+  reflects the walls and the room behind the camera.
+
+Cost (1920x1080, the machine busy): near-field pass, rooms 0.27 -> 0.35 ms, city 0.29 -> 0.97 ms (most of it is the picture
+reflection on the damp asphalt, which is the wet look). Shimmer with the camera moving close to the spheres: 6.2 % -> 7.2 % of the
+pixels; the other views unchanged within noise. The GI tab has a Reflections section to switch each part off.
