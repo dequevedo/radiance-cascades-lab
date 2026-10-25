@@ -240,7 +240,7 @@ func _follow_test(report: PackedStringArray) -> void:
 		if effect_world.recentres != before:
 			moves.append(i)
 			moved_ms.append(effect_world.recentre_ms)
-		if i % 300 == 150:
+		if i % 300 == 150 or (user_args.has("--follow-frames") and i >= 196 and i <= 208):
 			await _shot("follow_%04d.png" % i)
 	var g := gpu.duplicate()
 	g.sort()
@@ -704,7 +704,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow") or user_args.has("--traffic") or user_args.has("--presettest")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow") or user_args.has("--traffic") or user_args.has("--presettest") or user_args.has("--carwatch")
 	if not harness:
 		_start_interactive()
 		return
@@ -742,6 +742,16 @@ func _run() -> void:
 		ui._pending["voxel"] = 0.1
 		ui.apply_quality()
 		report.append("10 cm voxels: %s" % ui._volume_label.text.replace("\n", " | "))
+	if user_args.has("--carwatch"):
+		# The moving car seen from a corner of its loop: 66 moments, a third of a second apart.
+		anim_auto = false
+		_set_mode("world")
+		cam.position = Vector3(-27.0, 4.0, -27.0)
+		cam.look_at(Vector3(-22.0, 0.5, -10.0))
+		for i in 66:
+			anim_t = 1.0 + i * 0.333
+			await _frames(4)
+			await _shot("car_%02d.png" % i)
 	if user_args.has("--traffic"):
 		# A traffic light of block (1, 1) seen from above: where its green lens throws light on the sidewalk.
 		anim_auto = false
@@ -859,7 +869,7 @@ func _process(delta: float) -> void:
 			_box_nodes = RCW.find_nodes(dyn_root, [MeshInstance3D]).filter(func(n): return (n as MeshInstance3D).mesh is BoxMesh)
 		RenderingServer.call_on_render_thread(effect_world.update_dynamic.bind(
 			RCW.collect_boxes(_box_nodes, true), RCW.collect_lights(_light_nodes, true)))
-		effect_world.follow(cam.global_position)
+		effect_world.follow(cam.global_position, -cam.global_transform.basis.z)
 	if interactive:
 		_interactive_process(delta)
 

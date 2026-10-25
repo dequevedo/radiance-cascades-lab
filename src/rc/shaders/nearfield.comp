@@ -18,6 +18,7 @@ layout(set = 0, binding = 17, rgba16f) uniform restrict writeonly image2D spec_i
 layout(set = 0, binding = 18) uniform sampler3D mat_tex; // per voxel: metallic, roughness
 layout(set = 0, binding = 19) uniform sampler3D base_tex; // per voxel: base colour
 layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
+layout(set = 0, binding = 25) uniform sampler3D dyn_mask; // coarse cells a moving object touches
 layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
 layout(set = 0, binding = 22) uniform sampler2D smooth_tex; // Godot's normal_roughness: view-space normal * 0.5 + 0.5, interpolated across triangles
 layout(set = 0, binding = 23) uniform sampler3D tint_tex; // see-through voxels: the colour they let through (voxelize_mesh.comp)
@@ -34,6 +35,12 @@ layout(push_constant, std430) uniform Near {
 // Coverage of the moving objects. Their volume is empty outside their bounds (padded by 0.3 m), so most samples skip the read.
 float dyn_occ(vec3 pos, vec3 uvw) {
 	if (any(lessThan(pos, P.dyn_min.xyz)) || any(greaterThan(pos, P.dyn_max.xyz))) {
+		return 0.0;
+	}
+	// Inside the bounds of all of them (in a city, most of the volume when cars are spread out): a coarse mask of the cells they
+	// really touch, a tiny texture that stays in the cache.
+	ivec3 mc = ivec3((pos - P.vol_min.xyz) / P.glass_max.w);
+	if (texelFetch(dyn_mask, clamp(mc, ivec3(0), textureSize(dyn_mask, 0) - 1), 0).r < 0.5) {
 		return 0.0;
 	}
 	return textureLod(dyn_tex, uvw, 0.0).a;

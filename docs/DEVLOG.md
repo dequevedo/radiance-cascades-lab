@@ -975,3 +975,36 @@ voxels, about 6 GB of 3D textures plus the probes: more than the video memory, s
 | City | 6.75 ms (25 cm) | 3.31 ms (40 cm) | 9.51 ms (20 cm) |
 
 A city High with probes 0.75 m apart cost 15.3 ms; it keeps them 1 m apart.
+
+
+---
+
+# Step 21: traffic, better cars, textured asphalt, no popping at the edge of the volume
+
+**Things that popped.** Nothing was ever removed, but three things made dark cars vanish and appear at night:
+- the bounce light stopped dead at the sides of the volume, about 32 m away, and jumped 8 m whenever the volume followed the
+  camera: a dark car past the edge lit up all at once. It now fades out over the last 6 probe spacings inside the volume (only
+  when the volume follows the camera: a fixed volume's sides are the scene's own walls);
+- the fog past the volume scattered the sky's colour (black at night), a dark wall that moved with the volume: past the edge it
+  now keeps the light of the last place inside;
+- car paint was half metal, which at night, with nothing bright to reflect, is nearly black: it is a glossy dielectric now.
+
+The volume also follows a point a quarter of its width ahead of the camera, so more of what is seen is inside it.
+
+**Cars.** A car is now drawn from side profiles: a body and a glass cabin (extruded convex profiles), a painted roof and
+pillars, bumpers, a grille, mirrors, wheels with hub caps, head and tail lights; a saloon and a hatchback. **Traffic:** ten cars
+drive round five loops (rounded rectangles in the middle of the streets), keeping to their lane, with spot-light headlights; what
+the GI sees of each is two invisible boxes, voxelized every frame.
+
+**Asphalt.** A tileable 512 px texture made once from noise: grain and repaired patches in the colour, grain and cracks in the
+normal map, puddles in the roughness (shiny, so the sharp reflections show the neon in them), world-space triplanar every 6 m.
+
+**Moving objects spread over the city.** The skip of the moving objects' volume outside their bounds (step 16) stopped working:
+ten cars spread out make bounds as large as the volume. The rays now also check a coarse mask (2 m cells, a few KB, updated from
+the boxes every frame) and read the moving objects' volume only in cells a box touches; boxes far from the volume are dropped.
+City with the traffic moving, 1920x1080: 8.76 -> 7.18 ms (cascades 3.73 -> 3.21 ms).
+
+**The rooms got a little brighter, on purpose.** Since step 18 the voxels take a merged mesh's vertex colours. The store's
+checker floor has vertex colours, and its voxels used to get an average colour converted from sRGB, darker than the floor
+Godot draws (Godot reads these vertex colours as linear). Now they match, so more light bounces off the floor (about 5 levels
+of 255 in the store's views; the rooms without vertex colours did not change).

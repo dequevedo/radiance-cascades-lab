@@ -42,7 +42,7 @@ const GLOW := {
 	"traffic_red": [Color(1.0, 0.08, 0.05), 5.0], "traffic_green": [Color(0.1, 1.0, 0.4), 5.0],
 	"neon_pink": [Color(1.0, 0.18, 0.62), 5.0], "neon_cyan": [Color(0.15, 0.9, 1.0), 5.0], "neon_green": [Color(0.3, 1.0, 0.35), 4.5],
 	"neon_amber": [Color(1.0, 0.55, 0.08), 5.0], "lamp": [Color(1.0, 0.78, 0.5), 7.0], "bulb": [Color(1.0, 0.82, 0.55), 6.0],
-	"tail": [Color(1.0, 0.05, 0.05), 3.0]}
+	"tail": [Color(1.0, 0.05, 0.05), 3.0], "head": [Color(1.0, 0.95, 0.85), 4.0]}
 
 var main: Node3D
 var rng := RandomNumberGenerator.new()
@@ -51,8 +51,6 @@ var selectables: Array[Node3D] = []
 var sun: DirectionalLight3D
 var sun_energy := 0.0
 var lamp_scale := 1.0
-var car: Node3D
-var car_lights: Array[SpotLight3D] = []
 var _route: Array[Vector3] = [] # the moving car's loop
 var _route_len := 0.0
 var _lamps: Array[OmniLight3D] = []
@@ -129,6 +127,31 @@ class Part:
 			for b in nz:
 				box(ctr + Vector3(-size.x * 0.5 + (a + 0.5) * sx, 0, -size.z * 0.5 + (b + 0.5) * sz), Vector3(sx, size.y, sz), col)
 
+	## A convex profile (points (z, y), counter-clockwise seen from +x) extruded from x0 to x1, placed by xf.
+	func prism(pts: PackedVector2Array, x0: float, x1: float, col: Color, xf: Transform3D) -> void:
+		var n := pts.size()
+		var c := Vector2.ZERO
+		for q in pts:
+			c += q
+		c /= n
+		var b := xf.basis
+		for k in n:
+			var a2 := pts[k]
+			var b2 := pts[(k + 1) % n]
+			var edge := b2 - a2
+			var n2 := Vector2(edge.y, -edge.x) # perpendicular to the edge, turned outwards (away from the centre)
+			if n2.dot((a2 + b2) * 0.5 - c) < 0.0:
+				n2 = -n2
+			var out := (b.z * n2.x + b.y * n2.y).normalized() # profile point (z, y) -> local (x, y, z)
+			var pa0 := xf * Vector3(x0, a2.y, a2.x)
+			var pb0 := xf * Vector3(x0, b2.y, b2.x)
+			var pb1 := xf * Vector3(x1, b2.y, b2.x)
+			var pa1 := xf * Vector3(x1, a2.y, a2.x)
+			quad(pa0, pb0, pb1, pa1, out, out, out, out, col)
+			# the two ends, as fans round the centre
+			tri(xf * Vector3(x0, c.y, c.x), pa0, pb0, -b.x, -b.x, -b.x, col)
+			tri(xf * Vector3(x1, c.y, c.x), pb1, pa1, b.x, b.x, b.x, col)
+
 	func sphere(ctr: Vector3, r: float, col: Color, seg := 8, rings := 5) -> void:
 		for j in rings:
 			var t0 := PI * j / rings
@@ -181,6 +204,53 @@ func _flush(parent: Node, name: String) -> void:
 var _mat_cache := {}
 
 
+## Asphalt: [albedo, normal map, roughness], 512 x 512, tileable, made once from noise.
+func _asphalt_textures() -> Array:
+	const N := 512
+	var grain := FastNoiseLite.new()
+	grain.seed = 11
+	grain.frequency = 0.35
+	var coarse := FastNoiseLite.new()
+	coarse.seed = 12
+	coarse.frequency = 0.012
+	var cracks := FastNoiseLite.new()
+	cracks.seed = 13
+	cracks.noise_type = FastNoiseLite.TYPE_CELLULAR
+	cracks.frequency = 0.012
+	cracks.cellular_return_type = FastNoiseLite.RETURN_DISTANCE2_SUB
+	var puddle := FastNoiseLite.new()
+	puddle.seed = 14
+	puddle.frequency = 0.006
+	var g_img := grain.get_seamless_image(N, N)
+	var c_img := coarse.get_seamless_image(N, N)
+	var k_img := cracks.get_seamless_image(N, N)
+	var p_img := puddle.get_seamless_image(N, N)
+	var h := PackedFloat32Array()
+	h.resize(N * N)
+	var alb := Image.create(N, N, false, Image.FORMAT_RGB8)
+	var rough := Image.create(N, N, false, Image.FORMAT_L8)
+	for y in N:
+		for x in N:
+			var g := g_img.get_pixel(x, y).r
+			var co := c_img.get_pixel(x, y).r
+			var crack := 1.0 - smoothstep(0.0, 0.06, k_img.get_pixel(x, y).r) # 1 in the thin lines between cells
+			var wet := smoothstep(0.58, 0.66, p_img.get_pixel(x, y).r)
+			h[y * N + x] = g * 0.25 - crack * 0.6 - wet * 0.15
+			var v := 0.78 + 0.3 * (g - 0.5) + 0.25 * (co - 0.5) - crack * 0.35
+			alb.set_pixel(x, y, Color(v, v, v * 1.02))
+			rough.set_pixel(x, y, Color.from_hsv(0, 0, lerpf(0.55 + 0.2 * (g - 0.5), 0.06, wet)))
+	var nrm := Image.create(N, N, false, Image.FORMAT_RGB8)
+	for y in N:
+		for x in N:
+			var dx := h[y * N + (x + 1) % N] - h[y * N + (x - 1 + N) % N]
+			var dy := h[((y + 1) % N) * N + x] - h[((y - 1 + N) % N) * N + x]
+			var n := Vector3(-dx * 3.0, dy * 3.0, 1.0).normalized()
+			nrm.set_pixel(x, y, Color(n.x * 0.5 + 0.5, n.y * 0.5 + 0.5, n.z * 0.5 + 0.5))
+	for img in [alb, rough, nrm]:
+		img.generate_mipmaps()
+	return [ImageTexture.create_from_image(alb), ImageTexture.create_from_image(nrm), ImageTexture.create_from_image(rough)]
+
+
 func _material(key: String) -> Material:
 	if _mat_cache.has(key):
 		return _mat_cache[key]
@@ -199,15 +269,28 @@ func _material(key: String) -> Material:
 		m.vertex_color_use_as_albedo = true
 		match key:
 			"paint":
-				m.roughness = 0.25
-				m.metallic = 0.5
+				m.roughness = 0.3
 			"chrome":
 				m.roughness = 0.15
 				m.metallic = 1.0
+			"carglass":
+				m.roughness = 0.04 # dark, glossy: it reflects the street
 			"water":
 				m.roughness = 0.05
 			"road":
-				m.roughness = 0.32 # wet asphalt
+				# Wet asphalt with a texture: grain and repaired patches in the colour, grain and cracks in the relief, puddles
+				# in the roughness (shiny where the water lies, so the sharp reflections show the neon in them).
+				var tex := _asphalt_textures()
+				m.albedo_texture = tex[0]
+				m.normal_enabled = true
+				m.normal_texture = tex[1]
+				m.normal_scale = 0.5
+				m.roughness_texture = tex[2]
+				m.roughness = 1.0
+				m.uv1_triplanar = true
+				m.uv1_world_triplanar = true
+				m.uv1_scale = Vector3.ONE / 6.0 # a tile every 6 m
+				m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
 			_:
 				m.roughness = 0.88
 	_mat_cache[key] = m
@@ -260,7 +343,7 @@ func build(m: Node3D) -> void:
 				kind = "park"
 			_block(S, c, kind)
 			_flush(S, "Block_%d_%d" % [i, j])
-	_build_car(D)
+	_build_traffic(D)
 	sun = DirectionalLight3D.new()
 	sun.rotation_degrees = Vector3(-42.0, 30.0, 0.0)
 	sun.light_color = Color(1.0, 0.94, 0.84)
@@ -279,6 +362,8 @@ func build(m: Node3D) -> void:
 		"park": [Vector3(PITCH - 4.0, 1.7, -PITCH + 14.0), Vector3(PITCH + 10.0, 2.0, -PITCH)],
 		"crossing": [Vector3(road_z - 6.0, 1.6, road_z - 10.0), Vector3(road_z + 2.0, 2.0, road_z + 6.0)],
 		"rooftops": [Vector3(-30.0, 16.0, 30.0), Vector3(10.0, 4.0, -10.0)],
+		"parked": [Vector3(-36.0, 1.3, 20.8), Vector3(-30.0, 0.6, 18.2)],
+		"asphalt": [Vector3(-14.0, 1.2, 24.0), Vector3(-9.0, 0.0, 23.0)],
 	}
 	print("city: built in %d ms" % (Time.get_ticks_msec() - t0))
 
@@ -414,18 +499,54 @@ func _hydrant(p: Vector3) -> void:
 
 
 func _parked_car(p: Vector3, yaw: float) -> void:
-	var bs := Basis(Vector3.UP, yaw)
-	var col: Color = CAR_PAINT[rng.randi() % CAR_PAINT.size()]
-	var paint := _part("paint")
-	paint.box(p + Vector3(0, 0.62, 0), Vector3(1.75, 0.65, 4.1), col, bs)
-	paint.box(p + Vector3(0, 1.17, 0) - bs.z * 0.2, Vector3(1.6, 0.5, 2.2), col.darkened(0.1), bs)
-	var b := _part("base")
-	b.box(p + Vector3(0, 1.17, 0) - bs.z * 0.2, Vector3(1.62, 0.36, 2.0), Color(0.08, 0.1, 0.12), bs) # windows
-	for sx in [-0.8, 0.8]:
+	_car(_part, Transform3D(Basis(Vector3.UP, yaw), p), CAR_PAINT[rng.randi() % CAR_PAINT.size()], rng.randi() % 2, false)
+
+
+## A car (length 4.2 m, along +z), drawn into the parts get_part gives (by material): a body and a glass cabin from side
+## profiles, a painted roof and pillars, bumpers, a grille, wheels with hub caps, mirrors, head and tail lights (glowing when
+## lit). kind 0 = a saloon, 1 = a hatchback.
+func _car(get_part: Callable, xf: Transform3D, paint: Color, kind: int, lit: bool) -> void:
+	var body: Part = get_part.call("paint")
+	var glass: Part = get_part.call("carglass")
+	var dark: Part = get_part.call("base")
+	var b := xf.basis
+	var o := xf.origin
+	var rear := -2.1 if kind == 0 else -1.85
+	var low := PackedVector2Array([Vector2(rear, 0.3), Vector2(2.1, 0.3), Vector2(2.13, 0.55), Vector2(2.02, 0.74),
+		Vector2(1.0, 0.86), Vector2(rear + 0.35, 0.9), Vector2(rear, 0.78)])
+	body.prism(low, -0.89, 0.89, paint, xf)
+	var back := -1.6 if kind == 0 else -1.75
+	var cabin := PackedVector2Array([Vector2(back, 0.89), Vector2(0.95, 0.86), Vector2(0.25, 1.36), Vector2(back + 0.45, 1.38)])
+	if kind == 1:
+		cabin = PackedVector2Array([Vector2(back, 0.89), Vector2(0.95, 0.86), Vector2(0.25, 1.36), Vector2(back + 0.12, 1.38)])
+	glass.prism(cabin, -0.8, 0.8, Color(0.05, 0.07, 0.09), xf)
+	# The roof and the pillars in the paint colour, over the glass.
+	var roof_z := (0.25 + back + (0.45 if kind == 0 else 0.12)) * 0.5
+	var roof_l := 0.25 - (back + (0.45 if kind == 0 else 0.12))
+	body.box(o + b * Vector3(0, 1.385, roof_z), Vector3(1.56, 0.05, roof_l + 0.04), paint, b)
+	for sx in [-0.795, 0.795]:
+		body.box(o + b * Vector3(sx, 1.12, roof_z - 0.1), Vector3(0.025, 0.5, 0.1), paint, b) # B-pillar
+	# Bumpers, grille, mirrors.
+	dark.box(o + b * Vector3(0, 0.42, 2.14), Vector3(1.84, 0.2, 0.1), Color(0.12, 0.12, 0.13), b)
+	dark.box(o + b * Vector3(0, 0.42, rear - 0.04), Vector3(1.84, 0.2, 0.1), Color(0.12, 0.12, 0.13), b)
+	dark.box(o + b * Vector3(0, 0.58, 2.13), Vector3(0.75, 0.14, 0.04), Color(0.05, 0.05, 0.06), b)
+	for sx in [-0.97, 0.97]:
+		body.box(o + b * Vector3(sx, 1.0, 0.72), Vector3(0.12, 0.08, 0.07), paint, b)
+	# Wheels: a tyre and a lighter hub cap on each side.
+	var wheel_b := Basis(b.z, PI * 0.5) * b # the cylinder's axis along the car's x
+	for sx in [-0.79, 0.79]:
 		for sz in [-1.3, 1.3]:
-			b.cylinder(p + bs.x * (sx - 0.1) + bs.z * sz + Vector3(0, 0.33, 0), 0.33, 0.2, Color(0.06, 0.06, 0.06), 10,
-				Basis(bs.z, PI * 0.5) * bs)
-	_part("tail").box(p + Vector3(0, 0.7, 0) - bs.z * 2.06, Vector3(1.4, 0.12, 0.03), Color.WHITE, bs)
+			if kind == 1 and sz < 0.0:
+				sz = -1.15
+			var wc := o + b * Vector3(sx, 0.33, sz)
+			dark.cylinder(wc - b.x * 0.12, 0.33, 0.24, Color(0.05, 0.05, 0.05), 14, Basis(b.z, -PI * 0.5) * b)
+			dark.cylinder(wc - b.x * 0.125, 0.17, 0.25, Color(0.38, 0.38, 0.4), 10, Basis(b.z, -PI * 0.5) * b)
+	# Lights.
+	var head: Part = get_part.call("head" if lit else "base")
+	var tail: Part = get_part.call("tail" if lit else "base")
+	for sx in [-0.6, 0.6]:
+		head.box(o + b * Vector3(sx, 0.66, 2.11), Vector3(0.34, 0.11, 0.05), Color(0.85, 0.85, 0.8), b)
+		tail.box(o + b * Vector3(sx, 0.72, rear - 0.01), Vector3(0.3, 0.1, 0.05), Color(0.45, 0.05, 0.05), b)
 
 
 ## Shops at street level and flats above, round the edge of the block.
@@ -626,67 +747,106 @@ func _park(c: Vector3) -> void:
 				[Color(0.95, 0.2, 0.3), Color(1.0, 0.8, 0.15), Color(0.85, 0.4, 0.9), Color(1.0, 1.0, 0.95)][rng.randi() % 4], 6, 4)
 
 
-# --- the moving car ----------------------------------------------------------------------------------------------
+# --- traffic -----------------------------------------------------------------------------------------------------
 
-## A moving part: its own BoxMesh node (the GI voxelizes moving boxes every frame).
-func _node_box(parent: Node, pos: Vector3, size: Vector3, color: Color) -> MeshInstance3D:
+## A moving part: its own BoxMesh node (the GI voxelizes moving boxes every frame); invisible ones stand in for a shape.
+func _node_box(parent: Node, pos: Vector3, size: Vector3, color: Color, visible := true) -> MeshInstance3D:
 	var mi := MeshInstance3D.new()
 	var mesh := BoxMesh.new()
 	mesh.size = size
 	mi.mesh = mesh
 	var mat := StandardMaterial3D.new()
 	mat.albedo_color = color
-	mat.roughness = 0.4
 	mi.material_override = mat
 	mi.position = pos
+	if not visible:
+		mi.visible = false
+		mi.set_meta("rc_proxy", true)
 	parent.add_child(mi)
 	return mi
 
 
-func _build_car(D: Node3D) -> void:
-	car = Node3D.new()
-	car.name = "Car"
-	D.add_child(car)
-	var paint := Color(0.85, 0.1, 0.08)
-	for part in [[Vector3(0, 0.62, 0), Vector3(1.75, 0.65, 4.1), paint], [Vector3(0, 1.17, -0.2), Vector3(1.6, 0.5, 2.2), paint.darkened(0.1)],
-			[Vector3(0, 0.33, 1.3), Vector3(1.8, 0.66, 0.66), Color(0.06, 0.06, 0.06)], [Vector3(0, 0.33, -1.3), Vector3(1.8, 0.66, 0.66), Color(0.06, 0.06, 0.06)]]:
-		_node_box(car, part[0], part[1], part[2])
-	var head := _node_box(car, Vector3(0, 0.7, 2.06), Vector3(1.4, 0.12, 0.04), Color(1.0, 0.95, 0.85))
-	var hm := head.material_override as StandardMaterial3D
-	hm.emission_enabled = true
-	hm.emission = Color(1.0, 0.95, 0.85)
-	hm.emission_energy_multiplier = 4.0
-	for sx in [-0.6, 0.6]:
-		var s := SpotLight3D.new()
-		s.position = Vector3(sx, 0.75, 2.1)
-		s.rotation.y = PI # a spot shines along -Z; the car's front is +Z
-		s.rotation.x = deg_to_rad(-8.0)
-		s.light_color = Color(1.0, 0.95, 0.85)
-		s.light_energy = 8.0
-		s.spot_range = 25.0
-		s.spot_angle = 28.0
-		car.add_child(s)
-		car_lights.append(s)
-	# The loop: round the plaza block, in the middle of the streets around it.
-	var e := PITCH * 0.5
-	_route = [Vector3(-e, 0, -e), Vector3(e, 0, -e), Vector3(e, 0, e), Vector3(-e, 0, e), Vector3(-e, 0, -e)]
-	_route_len = 0.0
+## Loops round blocks, in the middle of the streets: [centre x, centre z, half width, half depth]. A car keeps to the right of
+## its way (2 m off the middle), so cars going round a loop the other way use the other lane.
+const LOOPS := [[0.0, 0.0, 22.0, 22.0], [-44.0, -44.0, 22.0, 22.0], [0.0, 0.0, 66.0, 22.0], [0.0, 0.0, 66.0, 66.0], [44.0, 44.0, 22.0, 22.0]]
+const CORNER_R := 5.0
+var _cars := [] # [node, loop, direction (+1 / -1), speed, phase]
+
+
+func _build_traffic(D: Node3D) -> void:
+	var specs := [[0, 1, 8.0, 0.0], [0, -1, 8.0, 0.5], [1, 1, 7.0, 0.2], [2, -1, 10.0, 0.1], [2, 1, 10.0, 0.6], [3, 1, 11.0, 0.3],
+		[3, -1, 11.0, 0.8], [4, -1, 7.5, 0.4], [3, 1, 11.0, 0.65], [2, -1, 10.0, 0.55]]
+	for k in specs.size():
+		var sp: Array = specs[k]
+		var car := Node3D.new()
+		car.name = "Car%d" % k
+		D.add_child(car)
+		var parts := {}
+		var get_part := func(m: String) -> Part:
+			if not parts.has(m):
+				parts[m] = Part.new()
+			return parts[m]
+		_car(get_part, Transform3D.IDENTITY, CAR_PAINT[(k * 3 + 1) % CAR_PAINT.size()], k % 2, true)
+		var saved := _parts
+		_parts = parts
+		_flush(car, "Body")
+		_parts = saved
+		(car.get_node("Body") as MeshInstance3D).remove_meta("rc_closed")
+		# What the GI sees of it: two invisible boxes, voxelized every frame like the dolly.
+		_node_box(car, Vector3(0, 0.6, 0.0), Vector3(1.78, 0.6, 4.2), CAR_PAINT[(k * 3 + 1) % CAR_PAINT.size()], false)
+		_node_box(car, Vector3(0, 1.12, -0.4), Vector3(1.5, 0.5, 2.2), Color(0.1, 0.1, 0.12), false)
+		for sx in [-0.6, 0.6]:
+			var s3 := SpotLight3D.new()
+			s3.position = Vector3(sx, 0.7, 2.15)
+			s3.rotation = Vector3(deg_to_rad(-6.0), PI, 0.0) # a spot shines along -Z; the car's front is +Z
+			s3.light_color = Color(1.0, 0.94, 0.82)
+			s3.light_energy = 6.0
+			s3.spot_range = 22.0
+			s3.spot_angle = 30.0
+			car.add_child(s3)
+		_cars.append([car, LOOPS[sp[0]], sp[1], sp[2], sp[3]])
+
+
+## A loop's length, and the point and direction at distance d along it: four straight runs joined by quarter circles.
+func _loop_len(loop: Array) -> float:
+	return 4.0 * (loop[2] - CORNER_R + loop[3] - CORNER_R) + TAU * CORNER_R
+
+
+func _loop_at(loop: Array, d: float) -> Array:
+	var cx: float = loop[0]
+	var cz: float = loop[1]
+	var w: float = loop[2]
+	var h: float = loop[3]
+	var hx := w - CORNER_R
+	var hz := h - CORNER_R
+	var starts := [Vector3(cx - hx, 0, cz + h), Vector3(cx + w, 0, cz + hz), Vector3(cx + hx, 0, cz - h), Vector3(cx - w, 0, cz - hz)]
+	var dirs := [Vector3(1, 0, 0), Vector3(0, 0, -1), Vector3(-1, 0, 0), Vector3(0, 0, 1)]
+	var runs := [2.0 * hx, 2.0 * hz, 2.0 * hx, 2.0 * hz]
+	var centres := [Vector3(cx + hx, 0, cz + hz), Vector3(cx + hx, 0, cz - hz), Vector3(cx - hx, 0, cz - hz), Vector3(cx - hx, 0, cz + hz)]
+	var arc := CORNER_R * PI * 0.5
+	d = fposmod(d, _loop_len(loop))
 	for k in 4:
-		_route_len += _route[k].distance_to(_route[k + 1])
+		if d <= runs[k]:
+			return [starts[k] + dirs[k] * d, dirs[k]]
+		d -= runs[k]
+		if d <= arc:
+			var th := (k + d / arc) * PI * 0.5
+			return [centres[k] + Vector3(sin(th), 0, cos(th)) * CORNER_R, Vector3(cos(th), 0, -sin(th))]
+		d -= arc
+	return [starts[0], dirs[0]]
 
 
-## The car's place on its loop (u in 0..1) and the live settings.
+## The cars along their loops at time t, and the live settings.
 func animate(u: float, t: float) -> void:
-	var d := fposmod(t * 8.0, _route_len) # 8 m/s
-	for k in 4:
-		var seg := _route[k].distance_to(_route[k + 1])
-		if d <= seg:
-			var p := _route[k].lerp(_route[k + 1], d / seg)
-			var dir := (_route[k + 1] - _route[k]).normalized()
-			car.position = p + dir.cross(Vector3.UP) * -2.0 # drive on the right
-			car.rotation.y = atan2(dir.x, dir.z)
-			break
-		d -= seg
+	for c in _cars:
+		var loop: Array = c[1]
+		var sign: float = c[2]
+		var at := _loop_at(loop, sign * (t * c[3] + c[4] * _loop_len(loop)))
+		var dir: Vector3 = at[1] * sign
+		var right := dir.cross(Vector3.UP)
+		var node: Node3D = c[0]
+		node.position = at[0] + right * 2.0
+		node.rotation.y = atan2(dir.x, dir.z)
 	for l in _lamps:
 		l.light_energy = 3.0 * lamp_scale
 	sun.light_energy = sun_energy

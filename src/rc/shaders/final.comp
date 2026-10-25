@@ -147,6 +147,16 @@ void composite(ivec2 p, vec3 n, vec3 gi_t, vec3 v) {
 	}
 	// Diffuse bounce: a metal has none. Glossy bounce: already Fresnel-weighted with the material's own base colour (nearfield).
 	vec3 indirect = (gi_t * albedo * (1.0 - metallic) + sp.rgb * pc.b.y) * P.tune.x;
+	// Near the sides of the volume the bounce light fades out over a few metres: there is none outside it, and a hard edge would
+	// show, and jump when the volume follows the camera (a dark car past the edge would light up all at once).
+	// (Only when the volume follows the camera: a fixed volume's sides are the scene's own walls.)
+	if ((int(P.screen.w + 0.5) & 256) != 0) {
+		vec3 pw = (P.cam_to_world * vec4(view_pos(p, texelFetch(depth_tex, p, 0).r), 1.0)).xyz;
+		vec3 lo = pw - P.vol_min.xyz;
+		vec3 hi = P.vol_min.xyz + P.vol_dims.xyz * P.vol_min.w - pw;
+		float inside = min(min(lo.x, hi.x), min(lo.z, hi.z));
+		indirect *= smoothstep(0.0, P.misc.x * 6.0, inside);
+	}
 	if (P.tune.w > 5.5) {
 		col.rgb = vec3(metallic, sp.a > 0.0 ? 1.0 : 0.0, 0.0); // debug: metallic (red) as the material lookup sees it
 	} else if (P.tune.w > 4.5) {

@@ -45,12 +45,14 @@ void main() {
 	vec3 vol_hi = P.vol_min.xyz + P.vol_dims.xyz * P.vol_min.w;
 	vec3 inscatter = vec3(0.0);
 	float T = 1.0;
+	vec3 li_last = P.sky_horizon.rgb;
 	for (int i = 0; i < steps; i++) {
 		vec3 pos = cam + dir * t;
 		float sigma = pc.a.x * exp(-max(pos.y - pc.a.z, 0.0) / pc.a.y);
-		vec3 li = P.sky_horizon.rgb;
+		vec3 li = li_last; // past the volume: the light of the last place inside it
 		if (all(greaterThanEqual(pos, vol_lo)) && all(lessThan(pos, vol_hi))) {
 			li = textureLod(iso_tex, (pos - P.vol_min.xyz) / extent, 0.0).rgb;
+			li_last = li;
 		}
 		float a = 1.0 - exp(-sigma * ds);
 		inscatter += T * a * li;

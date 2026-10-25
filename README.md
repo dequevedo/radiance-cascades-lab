@@ -3,7 +3,7 @@
 Real-time bounce light with **Radiance Cascades** in **Godot 4.7**, written as a `CompositorEffect` with compute shaders.
 No engine changes, no plugins: open the folder in Godot and run it.
 
-![A small store lit by Godot alone, with radiance cascades added, and the bounce light on its own](docs/readme/store.jpg)
+![A small store lit by Godot alone, with radiance cascades added, and the bounce light on its own](docs/readme/store_view.jpg)
 
 ## The scene
 
@@ -28,14 +28,16 @@ A store, a curved corridor with no lamp inside, a room of materials and a dark r
 ## The city
 
 `--city` builds a night city procedurally: blocks of shops and flats, a plaza, a market, a park, wet streets, lamps, trees,
-parked cars, traffic lights, bus stops and neon signs, and a car whose headlights are spot lights. The GI volume is much smaller
+parked cars, traffic lights, bus stops and neon signs, and traffic: cars with spot-light headlights driving round the blocks. The GI volume is much smaller
 than the city and follows the camera.
 
-![The procedural city from above](docs/readme/city_overview.jpg)
+![The procedural city from above](docs/readme/city_night.jpg)
 
-![A wet street at night](docs/readme/city_wet_street.jpg)
+![A wet street at night](docs/readme/city_avenue.jpg)
 
-![The market](docs/readme/city_stalls.jpg)
+![The market](docs/readme/city_market_stalls.jpg)
+
+![Cars with headlights on wet, textured asphalt](docs/readme/city_traffic.jpg)
 
 ## How it works
 
@@ -78,9 +80,10 @@ RX 9070 XT, 1920x1080, nothing moving:
 |---|---|
 | Rooms, High (10 cm voxels) | 4.61 (217) |
 | Rooms, Low (25 cm voxels) | 2.85 (351) |
-| City, default (25 cm voxels, 64 x 24 x 64 m) | 6.75 (148) |
-| City, High (20 cm voxels) | 9.51 (105) |
-| City, Low (40 cm voxels) | 3.31 (302) |
+| City, default (25 cm voxels, 64 x 24 x 64 m) | 6.67 (150) |
+| the same, with the traffic moving | 7.18 (139) |
+| City, High (20 cm voxels) | 9.56 (105) |
+| City, Low (40 cm voxels) | 3.26 (307) |
 
 When the volume follows the camera into new ground, that frame takes about 12 ms.
 

@@ -126,6 +126,9 @@ var _vox_base := RID() # per voxel: base colour (metals reflect with it)
 var _prev_color := RID() # last frame's finished picture (sharp reflections read it: a metal in it already shows its reflection)
 var _prev_color_valid := false
 var _prev_color_size := Vector2i.ZERO
+var _dyn_mask := RID() # coarse cells (about 2 m) that a moving object touches: rays read the moving objects' volume only there
+var _mask_k := 8 # voxels per mask cell along each axis
+var _mask_dims := Vector3i.ONE
 var _vox_tint := RID() # per voxel: the colour a see-through surface lets through (rgb), a = 1 where there is one
 var _has_glass := false
 var _glass_min := Vector3.ZERO
@@ -453,6 +456,16 @@ func _select_lights(lights: PackedFloat32Array) -> PackedFloat32Array:
 
 ## Per-frame input for dynamic scenes (call on the render thread): the moving boxes (see collect_boxes) and all lights.
 func update_dynamic(boxes: PackedFloat32Array, lights: PackedFloat32Array) -> void:
+	# Only what moves near the volume counts (in a city, most cars are far from it).
+	var vmin := volume_min - Vector3.ONE * 3.0
+	var vmax := volume_min + Vector3(dims) * voxel_size + Vector3.ONE * 3.0
+	var near := PackedFloat32Array()
+	for i in boxes.size() / BOX_FLOATS:
+		var o := i * BOX_FLOATS
+		var c := Vector3(boxes[o], boxes[o + 1], boxes[o + 2])
+		if c.x > vmin.x and c.x < vmax.x and c.y > vmin.y and c.y < vmax.y and c.z > vmin.z and c.z < vmax.z:
+			near.append_array(boxes.slice(o, o + BOX_FLOATS))
+	boxes = near
 	_dyn_boxes = boxes
 	_dyn_count = mini(boxes.size() / BOX_FLOATS, MAX_DYN_BOXES)
 	# Bounds of everything that moves (plus a margin): inside them shadows are marched softly.
@@ -468,8 +481,37 @@ func update_dynamic(boxes: PackedFloat32Array, lights: PackedFloat32Array) -> vo
 				ext += Vector3(absf(ax.x), absf(ax.y), absf(ax.z))
 			_dyn_min = _dyn_min.min(c - ext - Vector3.ONE * 0.3)
 			_dyn_max = _dyn_max.max(c + ext + Vector3.ONE * 0.3)
+	_update_dyn_mask(boxes)
 	_lights = _select_lights(lights)
 	_light_count = mini(_lights.size() / LIGHT_FLOATS, MAX_LIGHTS)
+
+
+## Marks the coarse cells every moving box touches (with a voxel of margin for the trilinear reads). Render thread.
+var _mask_bytes := PackedByteArray()
+
+
+func _update_dyn_mask(boxes: PackedFloat32Array) -> void:
+	if rd == null or not _dyn_mask.is_valid():
+		return
+	var n := _mask_dims.x * _mask_dims.y * _mask_dims.z
+	if _mask_bytes.size() != n:
+		_mask_bytes.resize(n)
+	_mask_bytes.fill(0)
+	var cell := voxel_size * _mask_k
+	for i in mini(boxes.size() / BOX_FLOATS, MAX_DYN_BOXES):
+		var o := i * BOX_FLOATS
+		var c := Vector3(boxes[o], boxes[o + 1], boxes[o + 2])
+		var ext := Vector3.ONE * (voxel_size + 0.3)
+		for k in 3:
+			var ax := Vector3(boxes[o + 4 + k * 4], boxes[o + 5 + k * 4], boxes[o + 6 + k * 4])
+			ext += Vector3(absf(ax.x), absf(ax.y), absf(ax.z))
+		var lo := Vector3i(((c - ext - volume_min) / cell).floor().clamp(Vector3.ZERO, Vector3(_mask_dims - Vector3i.ONE)))
+		var hi := Vector3i(((c + ext - volume_min) / cell).floor().clamp(Vector3.ZERO, Vector3(_mask_dims - Vector3i.ONE)))
+		for z in range(lo.z, hi.z + 1):
+			for y in range(lo.y, hi.y + 1):
+				for x in range(lo.x, hi.x + 1):
+					_mask_bytes[(z * _mask_dims.y + y) * _mask_dims.x + x] = 255
+	rd.texture_update(_dyn_mask, 0, _mask_bytes)
 
 
 func set_scene(tris: PackedFloat32Array, lights: PackedFloat32Array) -> void:
@@ -571,7 +613,7 @@ func free_resources() -> void:
 
 func _free_volume() -> void:
 	for r in [_tri_buf, _light_buf, _dyn_buf, _vox_static, _vox_dyn, _vox_albedo, _vox_rad, _pw_lo, _pw_hi, _probe[0], _probe[1],
-			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _amb_iso, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint, _vox_emit_w]:
+			_probe_keep, _vert_buf, _idx_buf, _col_buf, _amb, _amb_iso, _vox_emit, _vox_mat, _vox_dyn_emit, _vox_base, _vox_wind, _vox_nrm, _vox_tint, _vox_emit_w, _dyn_mask]:
 		if (r as RID).is_valid():
 			rd.free_rid(r)
 	_probe_keep = RID()
@@ -582,6 +624,7 @@ func _free_volume() -> void:
 	_vox_base = RID()
 	_vox_wind = RID()
 	_vox_emit_w = RID()
+	_dyn_mask = RID()
 	_vox_nrm = RID()
 	_vox_tint = RID()
 	_vox_dyn_emit = RID()
@@ -635,7 +678,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	_pack_mat(proj, p)
 	_pack_mat(proj.inverse(), p)
 	_pack_mat(cam_to_world, p)
-	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0) | (32 if sharp_reflections else 0) | (64 if _prev_color_valid else 0) | (128 if directional else 0))])
+	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0) | (8 if history_aware else 0) | (16 if facing else 0) | (32 if sharp_reflections else 0) | (64 if _prev_color_valid else 0) | (128 if directional else 0) | (256 if follow_step > 0.0 else 0))])
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
@@ -646,7 +689,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	p.append_array([_dyn_min.x, _dyn_min.y, _dyn_min.z, 1.0 if (dynamic and _dyn_count > 0) else 0.0])
 	p.append_array([_dyn_max.x, _dyn_max.y, _dyn_max.z, temporal_noise_floor])
 	p.append_array([_glass_min.x, _glass_min.y, _glass_min.z, 1.0 if (glass_tint and _has_glass) else 0.0])
-	p.append_array([_glass_max.x, _glass_max.y, _glass_max.z, 0.0])
+	p.append_array([_glass_max.x, _glass_max.y, _glass_max.z, voxel_size * _mask_k])
 	p.append_array([sky_horizon.r, sky_horizon.g, sky_horizon.b, 0.0])
 	p.append_array([sky_ground.r, sky_ground.g, sky_ground.b, 0.0])
 	var bytes := p.to_byte_array()
@@ -694,6 +737,9 @@ func rebuild() -> void:
 	_vox_base = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_wind = _tex3d(dims, RenderingDevice.DATA_FORMAT_R32_SINT)
 	_vox_emit_w = _tex3d(dims, RenderingDevice.DATA_FORMAT_R32_UINT)
+	_mask_k = maxi(roundi(2.0 / voxel_size), 1)
+	_mask_dims = Vector3i(ceili(dims.x / float(_mask_k)), ceili(dims.y / float(_mask_k)), ceili(dims.z / float(_mask_k)))
+	_dyn_mask = _tex3d(_mask_dims, RenderingDevice.DATA_FORMAT_R8_UNORM)
 	_vox_nrm = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_SNORM)
 	_vox_tint = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_dyn_emit = _tex3d(dims, RenderingDevice.DATA_FORMAT_R16G16B16A16_SFLOAT)
@@ -733,10 +779,14 @@ func debug_count_solid() -> void:
 
 ## Main thread, every frame: when the camera has moved more than follow_step from the volume's centre (sideways), the volume is
 ## moved under it, snapped to follow_step (the spacing of the top cascade's probes, so every probe grid stays on its grid).
-func follow(cam_pos: Vector3) -> void:
+func follow(cam_pos: Vector3, cam_forward := Vector3.ZERO) -> void:
 	if follow_step <= 0.0 or not volume_ready:
 		return
 	var size := Vector3(dims) * voxel_size
+	# Centre the volume a quarter of its width ahead of the camera: what is behind it is not seen.
+	var fwd := Vector3(cam_forward.x, 0.0, cam_forward.z)
+	if fwd.length() > 0.01:
+		cam_pos += fwd.normalized() * size.x * 0.25
 	# The step is a whole number of the top cascade's probe spacings (every finer grid divides it), so after a move every probe
 	# grid lies where it lay before; follow_step is only the wish.
 	var quantum := probe_spacing * pow(2.0, cascades - 1)
@@ -945,7 +995,8 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 15, [_sampler_lin, _vox_rad]),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]),
 				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 21, [_sampler_lin, _vox_nrm]),
-				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler_lin, _vox_tint])])
+				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler_lin, _vox_tint]),
+				 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 25, [_sampler, _dyn_mask])])
 		var pc := PackedFloat32Array([n, an, spacing, 1.0 if n == cascades - 1 else 0.0, start, end, 0.0, 0.0])
 		rd.compute_list_bind_uniform_set(cl, set_rid, 0)
 		rd.compute_list_set_push_constant(cl, pc.to_byte_array(), 32)
@@ -988,6 +1039,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 21, [_sampler_lin, _vox_nrm]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 23, [_sampler_lin, _vox_tint]), _img(24, _prev_color),
+			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 25, [_sampler, _dyn_mask]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 22, [_sampler, nr_tex if nr_tex.is_valid() else buffers.get_depth_layer(0)])])
 		var npc := PackedFloat32Array([A0, near_dirs, shift_x, shift_y])
 		rd.compute_list_bind_uniform_set(cl, near_set, 0)
