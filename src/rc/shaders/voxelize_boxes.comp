@@ -5,8 +5,9 @@
 layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
 
 layout(set = 0, binding = 1, rgba8) uniform restrict image3D vox_albedo;
+layout(set = 0, binding = 2, rgba16f) uniform restrict writeonly image3D dyn_emit; // emission of the moving objects
 layout(set = 0, binding = 5, std430) restrict readonly buffer Boxes {
-	vec4 b[]; // per box: centre, half-extent vector along x, y, z (world, rotation included), albedo.rgb
+	vec4 b[]; // per box: centre, half-extent vector along x, y, z (world, rotation included), albedo.rgb, emission.rgb
 } boxes;
 
 layout(push_constant, std430) uniform VB {
@@ -15,11 +16,12 @@ layout(push_constant, std430) uniform VB {
 
 void main() {
 	uint i = uint(pc.a.x + 0.5);
-	vec3 c = boxes.b[i * 5u].xyz;
-	vec3 ax = boxes.b[i * 5u + 1u].xyz;
-	vec3 ay = boxes.b[i * 5u + 2u].xyz;
-	vec3 az = boxes.b[i * 5u + 3u].xyz;
-	vec3 alb = boxes.b[i * 5u + 4u].rgb;
+	vec3 c = boxes.b[i * 6u].xyz;
+	vec3 ax = boxes.b[i * 6u + 1u].xyz;
+	vec3 ay = boxes.b[i * 6u + 2u].xyz;
+	vec3 az = boxes.b[i * 6u + 3u].xyz;
+	vec3 alb = boxes.b[i * 6u + 4u].rgb;
+	vec3 em = boxes.b[i * 6u + 5u].rgb;
 	float vs = P.vol_min.w;
 	ivec3 dims = ivec3(P.vol_dims.xyz);
 	vec3 ext = abs(ax) + abs(ay) + abs(az);
@@ -47,5 +49,8 @@ void main() {
 	}
 	if (cov > 0.0 && cov > imageLoad(vox_albedo, cell).a) {
 		imageStore(vox_albedo, cell, vec4(alb, cov));
+	}
+	if (cov > 0.2 && dot(em, vec3(1.0)) > 0.0) {
+		imageStore(dyn_emit, cell, vec4(em, 1.0)); // a screen that changes colour: its light moves through the bounce
 	}
 }

@@ -22,6 +22,15 @@ const COR_A := 6.0
 const COR_R := 5.0
 const COR_B := 8.0
 
+# A door in the corridor's right wall (between these distances from the opening) leads to two rooms south of it: a materials
+# room (glass, metal, glossy and rough spheres, one lamp) and, through it, a dark room lit only by a television.
+const DOOR_S0 := 2.7
+const DOOR_S1 := 3.9
+const ROOMS_X0 := -18.5 # west end of the two rooms (outer face)
+const ROOMS_Z0 := -5.0 # south wall, outer face
+const ROOMS_Z1 := -1.45 # the corridor's right wall, outer face
+const DIVIDER_X := -12.875 # the wall between the two rooms
+
 # The GI volume that holds the store and the corridor (world metres).
 const VOLUME_MIN := Vector3(-20.5, -0.5, -5.25)
 const VOLUME_SIZE := Vector3(28.0, 4.5, 19.25)
@@ -42,6 +51,10 @@ var dolly_lamp: OmniLight3D
 var dolly_bulb: MeshInstance3D
 var poses := {}
 var selectables: Array[Node3D] = [] # the props the object picker can select and move
+var tv_screen: MeshInstance3D # the dark room's television: a moving (re-voxelized) box whose emission changes colour
+var tv_animate := true
+var materials_lamp: OmniLight3D
+var materials_lamp_energy := 3.0
 
 
 ## The props, as boxes: [centre (pivot at the bottom centre, +z = front), size, colour, emission]. Sizes are real-world metres,
@@ -278,6 +291,7 @@ func build(m: Node3D) -> void:
 
 	# The corridor, and an optional lamp inside it (off by default) to see light travel the other way.
 	build_corridor(S)
+	build_rooms(S, D)
 	corridor_lamp = OmniLight3D.new()
 	corridor_lamp.position = Vector3(cor_path(COR_A + COR_R * PI * 0.25)[0]) + Vector3(0, 2.7, 0)
 	corridor_lamp.light_color = Color(1.0, 0.8, 0.5)
@@ -368,6 +382,9 @@ func build(m: Node3D) -> void:
 		"dolly": [Vector3(-1.2, 1.3, 2.6), Vector3(0.6, 0.6, 0.3)],
 		"corridor_mouth": [Vector3(-4.2, 1.6, 0.3), Vector3(-12.0, 1.3, 0.3)],
 		"corridor_bend": [Vector3(cor_path(9.0)[0]) + Vector3(0, 1.6, 0), Vector3(cor_path(15.5)[0]) + Vector3(0, 1.3, 0)],
+		"materials": [Vector3(-7.9, 1.55, -1.9), Vector3(-11.2, 0.6, -4.1)],
+		"glass": [Vector3(-11.6, 1.5, -1.9), Vector3(-7.95, 1.0, -3.5)],
+		"tv_room": [Vector3(-13.5, 1.45, -1.9), Vector3(-17.6, 0.75, -3.3)],
 		"corridor_neon": [Vector3(cor_path(COR_A + COR_R * PI * 0.5 + 1.5)[0]) + Vector3(0, 1.6, 0), Vector3(cor_path(COR_A + COR_R * PI * 0.5 + COR_B - 2.0)[0]) + Vector3(0, 1.4, 0)],
 		"corridor_end": [Vector3(cor_path(COR_A + COR_R * PI * 0.5 + 5.5)[0]) + Vector3(0, 1.6, 0), Vector3(cor_path(COR_A + 1.0)[0]) + Vector3(0, 1.2, 0)],
 	}
@@ -379,8 +396,112 @@ func animate(u: float, _t: float) -> void:
 	for l in ceiling_lights:
 		l.light_energy = 4.0 * ceiling_scale
 	street_lamp.light_energy = street_energy
+	materials_lamp.light_energy = materials_lamp_energy
+	# The television: its picture changes colour slowly (a cross-fade every few seconds, never a flash).
+	var screen_mat := tv_screen.material_override as StandardMaterial3D
+	var c := TV_COLORS[0]
+	if tv_animate:
+		var ph := _t / 3.5
+		var k := int(floor(ph))
+		c = TV_COLORS[k % TV_COLORS.size()].lerp(TV_COLORS[(k + 1) % TV_COLORS.size()], smoothstep(0.6, 1.0, ph - floor(ph)))
+	screen_mat.albedo_color = c
+	screen_mat.emission = c
 	corridor_lamp.light_energy = corridor_lamp_energy
 	sun.light_energy = sun_energy
+
+
+# --- the two rooms south of the corridor ----------------------------------------------------------------
+
+const TV_COLORS: Array[Color] = [Color(0.55, 0.7, 1.0), Color(1.0, 0.95, 0.85), Color(0.35, 0.9, 0.55), Color(1.0, 0.45, 0.3), Color(0.65, 0.5, 1.0)]
+
+
+func sphere(parent: Node, pos: Vector3, radius: float, color: Color, metallic: float, roughness: float) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = radius
+	sm.height = radius * 2.0
+	sm.radial_segments = 48
+	sm.rings = 24
+	mi.mesh = sm
+	var mat := StandardMaterial3D.new()
+	mat.albedo_color = color
+	mat.metallic = metallic
+	mat.roughness = roughness
+	mi.material_override = mat
+	mi.position = pos
+	parent.add_child(mi)
+	return mi
+
+
+func build_rooms(S: Node3D, D: Node3D) -> void:
+	var x0 := ROOMS_X0
+	var x1 := -ROOM_X - WALL # the store's left wall closes them on the east
+	var cx := (x0 + x1) * 0.5
+	var cz := (ROOMS_Z0 + ROOMS_Z1) * 0.5
+	var wx := x1 - x0
+	var wz := ROOMS_Z1 - ROOMS_Z0
+	var grey := Color(0.72, 0.72, 0.7)
+	box(S, Vector3(cx, -0.125, cz), Vector3(wx, 0.25, wz), Color(0.42, 0.42, 0.42)) # floor
+	box(S, Vector3(cx, CEIL + 0.125, cz), Vector3(wx, 0.25, wz), Color(0.6, 0.6, 0.58)) # ceiling
+	box(S, Vector3(cx, CEIL * 0.5, ROOMS_Z0 + 0.125), Vector3(wx, CEIL, 0.25), grey) # south wall
+	box(S, Vector3(x0 + 0.125, CEIL * 0.5, cz), Vector3(0.25, CEIL, wz), grey) # west wall
+	# North wall of the dark room (the corridor bends away from it there).
+	var nx1 := -ROOM_X - COR_A
+	box(S, Vector3((x0 + nx1) * 0.5, CEIL * 0.5, ROOMS_Z1 + 0.125), Vector3(nx1 - x0, CEIL, 0.25), grey)
+	# The wall between the rooms, with a door near the south wall (so little of the materials room's light gets in).
+	var dz0 := ROOMS_Z0 + 0.25 + 0.15
+	var dz1 := dz0 + 0.9
+	var blue := Color(0.25, 0.35, 0.7)
+	box(S, Vector3(DIVIDER_X, CEIL * 0.5, (dz1 + ROOMS_Z1) * 0.5), Vector3(0.25, CEIL, ROOMS_Z1 - dz1), blue)
+	box(S, Vector3(DIVIDER_X, CEIL * 0.5, (ROOMS_Z0 + 0.25 + dz0) * 0.5), Vector3(0.25, CEIL, dz0 - ROOMS_Z0 - 0.25), blue)
+	box(S, Vector3(DIVIDER_X, (2.1 + CEIL) * 0.5, (dz0 + dz1) * 0.5), Vector3(0.25, CEIL - 2.1, dz1 - dz0), blue)
+
+	# --- Materials room: one lamp; spheres of chrome, gold, glossy plastic and rough plaster; a glass pane; a copper box.
+	prop(S, "electronics/fluorescent_fixture", Vector3(-10.0, CEIL - 0.06, -3.1))
+	materials_lamp = OmniLight3D.new()
+	materials_lamp.position = Vector3(-10.0, CEIL - 0.3, -3.1)
+	materials_lamp.light_color = Color(1.0, 0.95, 0.88)
+	materials_lamp.light_energy = materials_lamp_energy
+	materials_lamp.omni_range = 8.0
+	materials_lamp.omni_attenuation = 2.0
+	materials_lamp.shadow_enabled = true
+	S.add_child(materials_lamp)
+	var pedestal := Color(0.82, 0.82, 0.8)
+	var specs := [
+		[-11.9, Color(0.92, 0.92, 0.94), 1.0, 0.08, "Chrome"],
+		[-10.7, Color(1.0, 0.78, 0.36), 1.0, 0.35, "Gold"],
+		[-9.5, Color(0.8, 0.08, 0.06), 0.0, 0.08, "GlossyPlastic"],
+		[-8.3, Color(0.85, 0.85, 0.83), 0.0, 1.0, "RoughPlaster"]]
+	for sp in specs:
+		box(S, Vector3(sp[0], 0.25, -4.1), Vector3(0.55, 0.5, 0.55), pedestal)
+		sphere(S, Vector3(sp[0], 0.5 + 0.3, -4.1), 0.3, sp[1], sp[2], sp[3]).name = sp[4] + "Sphere"
+	var copper := box(S, Vector3(-12.1, 0.3, -2.2), Vector3(0.6, 0.6, 0.6), Color(0.95, 0.6, 0.45), 0.4)
+	(copper.material_override as StandardMaterial3D).metallic = 1.0
+	(copper.material_override as StandardMaterial3D).roughness = 0.45
+	copper.name = "CopperBox"
+	# A tinted glass pane: Godot's light goes through it (it casts no shadow) and so does the bounce (see-through materials are
+	# not voxelized).
+	var glass := box(S, Vector3(-7.95, 1.1, -3.25), Vector3(0.04, 2.2, 2.0), Color(0.6, 0.8, 1.0, 0.25))
+	var gm := glass.material_override as StandardMaterial3D
+	gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	gm.roughness = 0.05
+	glass.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	glass.name = "GlassPane"
+
+	# --- Dark room: no lamp. A television on a stand, a sofa facing it, a rug and a low table.
+	box(S, Vector3(-17.9, 0.25, -3.1), Vector3(0.5, 0.5, 0.9), Color(0.35, 0.25, 0.18)) # stand
+	box(S, Vector3(-17.85, 0.76, -3.1), Vector3(0.45, 0.52, 0.66), Color(0.12, 0.12, 0.12)) # television body
+	box(S, Vector3(-14.4, 0.225, -3.1), Vector3(0.9, 0.45, 2.0), Color(0.72, 0.64, 0.52)) # sofa seat
+	box(S, Vector3(-13.95, 0.7, -3.1), Vector3(0.25, 0.55, 2.0), Color(0.72, 0.64, 0.52)) # sofa back
+	box(S, Vector3(-16.0, 0.01, -3.1), Vector3(2.4, 0.02, 1.6), Color(0.45, 0.15, 0.12)) # rug
+	box(S, Vector3(-15.6, 0.2, -3.1), Vector3(0.5, 0.4, 0.9), Color(0.5, 0.36, 0.22)) # low table
+	# The picture: a moving box (re-voxelized every frame like the dolly) so its changing colour lights the room at once.
+	tv_screen = box(D, Vector3(-17.615, 0.78, -3.1), Vector3(0.02, 0.38, 0.54), TV_COLORS[0])
+	var tm := tv_screen.material_override as StandardMaterial3D
+	tm.emission_enabled = true
+	tm.emission = TV_COLORS[0]
+	tm.emission_energy_multiplier = 3.0
+	tv_screen.name = "TvScreen"
 
 
 # --- the corridor ------------------------------------------------------------------------------------
@@ -410,6 +531,9 @@ func cor_strip(parent: Node, color: Color, parts: Array) -> void:
 	var idx := PackedInt32Array()
 	for part in parts:
 		for i in n:
+			var s_mid := total * (i + 0.5) / n
+			if part.has("hole") and s_mid > part["hole"][0] and s_mid < part["hole"][1]:
+				continue # a door through this wall
 			var q := []
 			for sd in [total * i / n, total * (i + 1) / n]:
 				var pth := cor_path(sd)
@@ -452,9 +576,12 @@ func build_corridor(parent: Node) -> void:
 	cor_strip(parent, Color(0.72, 0.72, 0.7), [
 		{"e0": func(c, r): return c - r * hw + up * h, "e1": func(c, r): return c + r * hw + up * h, "n": func(_r): return -up},
 		{"e0": func(c, r): return c - r * (hw + t) + up * (h + t), "e1": func(c, r): return c + r * (hw + t) + up * (h + t), "n": func(_r): return up}])
-	cor_strip(parent, Color(0.78, 0.3, 0.24), [ # right wall: the outside of the left turn
-		{"e0": func(c, r): return c + r * hw, "e1": func(c, r): return c + r * hw + up * h, "n": func(r): return -r},
-		{"e0": func(c, r): return c + r * (hw + t) - up * t, "e1": func(c, r): return c + r * (hw + t) + up * (h + t), "n": func(r): return r}])
+	cor_strip(parent, Color(0.78, 0.3, 0.24), [ # right wall: the outside of the left turn (with the door to the rooms)
+		{"e0": func(c, r): return c + r * hw, "e1": func(c, r): return c + r * hw + up * h, "n": func(r): return -r, "hole": [DOOR_S0, DOOR_S1]},
+		{"e0": func(c, r): return c + r * (hw + t) - up * t, "e1": func(c, r): return c + r * (hw + t) + up * (h + t), "n": func(r): return r, "hole": [DOOR_S0, DOOR_S1]}])
+	# Above the door.
+	var door_c: Vector3 = cor_path((DOOR_S0 + DOOR_S1) * 0.5)[0]
+	box(parent, Vector3(door_c.x, (2.2 + h + t) * 0.5, door_c.z - hw - t * 0.5), Vector3(DOOR_S1 - DOOR_S0, h + t - 2.2, t), Color(0.78, 0.3, 0.24))
 	cor_strip(parent, Color(0.2, 0.52, 0.56), [ # left wall: the inside of the turn
 		{"e0": func(c, r): return c - r * hw, "e1": func(c, r): return c - r * hw + up * h, "n": func(r): return r},
 		{"e0": func(c, r): return c - r * (hw + t) - up * t, "e1": func(c, r): return c - r * (hw + t) + up * (h + t), "n": func(r): return -r}])

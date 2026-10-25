@@ -10,6 +10,7 @@ layout(set = 0, binding = 21, rgba8) uniform restrict readonly image3D vox_dyn; 
 layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
 layout(set = 0, binding = 22, rgba16f) uniform restrict readonly image3D amb_img; // last frame's ambient cubes (ambient.comp)
 layout(set = 0, binding = 23, rgba16f) uniform restrict readonly image3D emit_img; // emission of the static surfaces (rgb, a = emissive)
+layout(set = 0, binding = 24, rgba16f) uniform restrict readonly image3D dyn_emit_img; // emission of the moving objects
 layout(set = 0, binding = 4, std430) restrict readonly buffer Lights {
 	vec4 l[]; // per light: (pos, range), (color*energy, type 0=omni 1=directional), (dir to light, decay)
 } lights;
@@ -193,6 +194,7 @@ void main() {
 	}
 	vec3 bounce = region.o.w > 0.0 ? region.o.w * min(ambient_at(pos, n), vec3(P.tune.z)) : vec3(0.0);
 	vec4 em = imageLoad(emit_img, c);
-	vec3 emission = em.a > 0.5 ? em.rgb * region.b.x : vec3(0.0);
+	vec4 dem = imageLoad(dyn_emit_img, c);
+	vec3 emission = ((em.a > 0.5 ? em.rgb : vec3(0.0)) + (dem.a > 0.5 ? dem.rgb : vec3(0.0))) * region.b.x;
 	imageStore(vox_rad, c, vec4(alb.rgb * (direct + bounce) + emission, 1.0));
 }

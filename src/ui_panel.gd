@@ -472,6 +472,14 @@ func _build_scene(body: VBoxContainer) -> void:
 		"A lamp at the bend of the corridor (off by default): see light travel back towards the store.", "%.1f")
 	_slider(body, "Sun", 0.0, 10.0, 0.1, main.sun_value, func(v): main.set_sun(v),
 		"Daylight: a sun and a sky through the windows.", "%.1f")
+	_slider(body, "Materials room lamp", 0.0, 10.0, 0.1, shop.materials_lamp_energy, func(v): shop.materials_lamp_energy = v,
+		"The only lamp of the materials room (chrome, gold, glossy plastic, plaster, copper, glass).", "%.1f")
+	_check(body, "Television changes colour", shop.tv_animate, func(v): shop.tv_animate = v,
+		"The dark room's television cross-fades between colours every few seconds; its light reaches the room only through the bounce.")
+	_slider(body, "Glossy reflections", 0.0, 2.0, 0.05, effect.spec_strength, func(v): effect.spec_strength = v,
+		"Blurred reflections of the bounce light on shiny surfaces (metal, glossy plastic), read from the probes. Too soft for a mirror.")
+	_check(body, "Godot screen-space reflections", main.world_env.environment.ssr_enabled, func(v): main.world_env.environment.ssr_enabled = v,
+		"Godot's own sharp reflections of what is on screen (shiny floors, chrome). They do not see what is off screen.")
 	_slider(body, "Glowing surfaces", 0.0, 4.0, 0.1, effect.emission_scale, func(v): effect.emission_scale = v,
 		"How much the TV screen and the neon sign in the corridor light the scene (they have no lamp: only the bounce carries their light).")
 	_slider(body, "Dolly lamp", 0.0, 20.0, 0.5, shop.dolly_lamp.light_energy, func(v): shop.dolly_lamp.light_energy = v,

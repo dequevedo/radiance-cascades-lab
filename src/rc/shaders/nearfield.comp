@@ -12,6 +12,9 @@ layout(set = 0, binding = 8) uniform sampler2D depth_tex;
 layout(set = 0, binding = 10, rgba16f) uniform restrict readonly image3D c0_img;
 layout(set = 0, binding = 12, rgba16f) uniform restrict writeonly image2D near_img;
 layout(set = 0, binding = 13, rgba16f) uniform restrict writeonly image2D nrm_img;
+layout(set = 0, binding = 17, rgba16f) uniform restrict writeonly image2D spec_img; // glossy reflection from the probes (rgb), metallic (a)
+layout(set = 0, binding = 18) uniform sampler3D mat_tex; // per voxel: metallic, roughness
+layout(set = 0, binding = 19) uniform sampler3D base_tex; // per voxel: base colour
 layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
 layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
 layout(set = 0, binding = 15) uniform sampler3D rad_tex; // vox_rad, trilinear: rgb premultiplied by alpha (= surface voxel weight)
@@ -59,6 +62,26 @@ vec3 probe_blend(vec3 pw, vec3 nw, ivec2 ij, int a0, vec3 jitter) {
 	return ws > 0.0 ? acc / ws : vec3(0.0);
 }
 
+// The same as probe_blend for any direction: the 4 nearest directions of the probes' octahedral grid, blended bilinearly, so a
+// reflection turns smoothly instead of jumping between the 16 directions a probe of cascade 0 holds.
+vec3 probe_blend_dir(vec3 pw, vec3 nw, vec3 d, int a0) {
+	vec2 q = d.xy / (abs(d.x) + abs(d.y) + abs(d.z));
+	if (d.z < 0.0) {
+		q = (1.0 - abs(q.yx)) * sign(q.xy);
+	}
+	vec2 g = (q * 0.5 + 0.5) * float(a0) - 0.5;
+	ivec2 i0 = ivec2(floor(g));
+	vec2 f = g - vec2(i0);
+	vec3 acc = vec3(0.0);
+	for (int k = 0; k < 4; k++) {
+		ivec2 o = ivec2(k & 1, k >> 1);
+		ivec2 ij = clamp(i0 + o, ivec2(0), ivec2(a0 - 1));
+		float w = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
+		acc += w * probe_blend(pw, nw, ij, a0, vec3(0.0));
+	}
+	return acc;
+}
+
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(p, ivec2(P.screen.xy)))) {
@@ -68,6 +91,7 @@ void main() {
 	if (d <= SKY_DEPTH) {
 		imageStore(near_img, p, vec4(0.0));
 		imageStore(nrm_img, p, vec4(0.0));
+		imageStore(spec_img, p, vec4(0.0));
 		return;
 	}
 	vec3 vpos = view_pos(p, d);
@@ -127,4 +151,29 @@ void main() {
 		}
 	}
 	imageStore(near_img, p, vec4(rad, 1.0));
+
+	// Glossy reflection: the light the probes around this point receive from the mirror direction. The probes of cascade 0 hold
+	// 4 x 4 directions, so this is a blurred reflection: right for satin and brushed surfaces, too soft for a mirror (Godot's own
+	// screen-space reflections, an option in the panel, handle sharp ones). The material comes from the voxel under the pixel.
+	// The surface voxel under the pixel: the first marked one a little inside the surface.
+	vec4 m = vec4(0.0);
+	vec3 muvw = vec3(0.0);
+	for (int k = 0; k < 4 && m.a < 0.5; k++) {
+		muvw = (pw - nw * P.vol_min.w * (0.25 + 0.35 * float(k)) - P.vol_min.xyz) / (P.vol_dims.xyz * P.vol_min.w);
+		m = textureLod(mat_tex, muvw, 0.0);
+	}
+	float metallic = m.a > 0.5 ? m.r : 0.0;
+	float rough = m.a > 0.5 ? m.g : 1.0;
+	vec3 spec = vec3(0.0);
+	if (rough < 0.85) {
+		vec3 cam = (P.cam_to_world * vec4(0.0, 0.0, 0.0, 1.0)).xyz;
+		vec3 v = normalize(cam - pw);
+		vec3 r = reflect(-v, nw);
+		// Fresnel (Schlick): dielectrics reflect 4 % head-on and more at grazing angles; metals reflect their own colour.
+		vec3 base = textureLod(base_tex, muvw, 0.0).rgb;
+		vec3 f0 = mix(vec3(0.04), base, metallic);
+		vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - clamp(dot(nw, v), 0.0, 1.0), 5.0);
+		spec = fresnel * probe_blend_dir(pw, nw, r, a0) * mix(1.0, 0.3, rough / 0.85);
+	}
+	imageStore(spec_img, p, vec4(spec, metallic));
 }

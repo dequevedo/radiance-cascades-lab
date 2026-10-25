@@ -187,9 +187,9 @@ func _shot(path: String) -> Image:
 func _set_mode(mode: String) -> void:
 	var gi_only := mode.ends_with("_gi")
 	var heat := mode.ends_with("_heat")
-	var base := mode.trim_suffix("_gi").trim_suffix("_alb").trim_suffix("_dbg").trim_suffix("_heat")
+	var base := mode.trim_suffix("_gi").trim_suffix("_alb").trim_suffix("_dbg").trim_suffix("_heat").trim_suffix("_spec").trim_suffix("_metal")
 	effect_ss.debug_mode = 1 if gi_only else 0
-	effect_world.debug_mode = 1 if gi_only else (2 if mode.ends_with("_alb") else (3 if mode.ends_with("_dbg") else (4 if heat else 0)))
+	effect_world.debug_mode = 1 if gi_only else (2 if mode.ends_with("_alb") else (3 if mode.ends_with("_dbg") else (4 if heat else (5 if mode.ends_with("_spec") else (6 if mode.ends_with("_metal") else 0)))))
 	effect_ss.gi_enabled = true
 	effect_world.gi_enabled = true
 	# Indirect-only views are dim: they get a gain so they survive 8-bit quantization (the panel's "bounce-only brightness").
@@ -521,7 +521,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest")
 	if not harness:
 		_start_interactive()
 		return
@@ -531,6 +531,21 @@ func _run() -> void:
 		await _artifacts(report)
 	if user_args.has("--flicker"):
 		await _flicker(report)
+	if user_args.has("--mattest"):
+		anim_auto = false
+		_pose("materials")
+		for mode in ["world", "world_spec", "world_metal"]:
+			_set_mode(mode)
+			await _frames(40)
+			await _shot("mat_%s.png" % mode)
+		# The dark room at three moments of the television's picture.
+		_pose("tv_room")
+		for mode in ["off", "world"]:
+			_set_mode(mode)
+			for t in [0.0, 7.0, 14.0]:
+				anim_t = t
+				await _frames(50)
+				await _shot("tv_%s_%02d.png" % [mode, int(t)])
 	if user_args.has("--aatest"):
 		anim_auto = false
 		for mode in ["off", "fxaa", "smaa", "taa", "msaa"]:

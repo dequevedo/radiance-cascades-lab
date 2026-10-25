@@ -18,10 +18,11 @@ layout(set = 0, binding = 13, rgba16f) uniform restrict readonly image2D nrm_img
 layout(set = 0, binding = 16, rgba16f) uniform restrict readonly image2D nrm_prev;
 layout(set = 0, binding = 17, rgba16f) uniform restrict readonly image2D hist_prev; // rgb = bounce light, a = history length (frames)
 layout(set = 0, binding = 18, rgba16f) uniform restrict writeonly image2D hist_cur;
+layout(set = 0, binding = 20, rgba16f) uniform restrict readonly image2D spec_img; // glossy reflection (rgb), metallic (a)
 
 layout(push_constant, std430) uniform Final {
 	vec4 a; // a_0, directions per axis of the per-pixel tile, tile shift x, tile shift y
-	vec4 b; // x: pass (0 = gather + temporal [+ composite when the filter is off], 1 = filter + composite)
+	vec4 b; // x: pass (0 = gather + temporal [+ composite when the filter is off], 1 = filter + composite); y: glossy strength
 } pc;
 
 //#include screen.inc
@@ -103,8 +104,10 @@ vec3 filtered(ivec2 p, vec3 n, float dp, float hist_len) {
 	return ws > 0.0 ? acc / ws : imageLoad(hist_prev, p).rgb;
 }
 
-void composite(ivec2 p, vec3 gi_t) {
+void composite(ivec2 p, vec3 n, vec3 gi_t) {
 	vec4 col = imageLoad(color_img, p);
+	vec4 sp = imageLoad(spec_img, p);
+	float metallic = sp.a;
 	vec3 albedo;
 	if (P.misc.w > 0.5) {
 		albedo = srgb_to_linear(texelFetch(albedo_tex, p, 0).rgb);
@@ -112,8 +115,13 @@ void composite(ivec2 p, vec3 gi_t) {
 		float luma = dot(col.rgb, vec3(0.2126, 0.7152, 0.0722));
 		albedo = luma > 1e-4 ? clamp(col.rgb / luma * P.tune.y, 0.0, 1.0) : vec3(P.tune.y);
 	}
-	vec3 indirect = gi_t * albedo * P.tune.x;
-	if (P.tune.w > 3.5) {
+	// Diffuse bounce: a metal has none. Glossy bounce: already Fresnel-weighted with the material's own base colour (nearfield).
+	vec3 indirect = (gi_t * albedo * (1.0 - metallic) + sp.rgb * pc.b.y) * P.tune.x;
+	if (P.tune.w > 5.5) {
+		col.rgb = vec3(metallic, sp.a > 0.0 ? 1.0 : 0.0, 0.0); // debug: metallic (red) as the material lookup sees it
+	} else if (P.tune.w > 4.5) {
+		col.rgb = sp.rgb * P.tune.x; // debug: the glossy reflection from the probes
+	} else if (P.tune.w > 3.5) {
 		col.rgb = heat(dot(gi_t, vec3(0.2126, 0.7152, 0.0722)) * P.tune.x);
 	} else if (P.tune.w > 1.5) {
 		col.rgb = albedo;
@@ -161,7 +169,7 @@ void main() {
 	float dp = np.w;
 	bool filter_on = (flags & 4) != 0;
 	if (filter_pass) {
-		composite(p, filtered(p, n, dp, imageLoad(hist_prev, p).a));
+		composite(p, n, filtered(p, n, dp, imageLoad(hist_prev, p).a));
 		return;
 	}
 	ivec2 shift = ivec2(int(pc.a.z + 0.5), int(pc.a.w + 0.5));
@@ -234,6 +242,6 @@ void main() {
 	}
 	imageStore(hist_cur, p, vec4(gi_t, hist_len));
 	if (!filter_on) {
-		composite(p, gi_t);
+		composite(p, n, gi_t);
 	}
 }

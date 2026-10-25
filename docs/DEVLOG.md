@@ -722,3 +722,24 @@ edge every frame).
 | **Glowing surfaces** | Emissive materials are voxelized with their emission into their own volume, added to the light of their voxels. A TV screen and a neon sign at the dark end of the corridor light their surroundings with no lamp. | Part of the re-lighting cost above. |
 | **History-aware filter** | Each pixel keeps how many frames its history has; a short history is averaged over its frames so far and filtered twice as wide. | **No measurable gain**: pixels shimmering with the camera moving 2.27 % -> 2.22 % (noise). Left on: it costs nothing. |
 | **Anti-aliasing** | Off, FXAA, SMAA, TAA (Godot's) or MSAA 4x in the Quality tab; **TAA is the default**. | Same cost within noise (5.21-5.36 ms). With a still camera TAA halves the shimmer (0.45 % -> 0.20 % of pixels); moving, the bounce light shimmers the same with SMAA and TAA (2.2 %). |
+
+
+---
+
+# Step 11: two new rooms, materials, a television that lights a dark room
+
+- **Rooms.** A door in the corridor's right wall leads to a **materials room** (one lamp; chrome, gold, glossy plastic and plaster
+  spheres, a copper box, a tinted glass pane) and through it to a **dark room** with no lamp: a television, a sofa, a rug.
+- **Glass**: see-through materials (`TRANSPARENCY_*` with alpha below 0.95) are not voxelized, so light passes. No tint, no
+  refraction.
+- **Metal**: voxels store the diffuse colour (`albedo x (1 - metallic)`), so metals bounce no diffuse light; the composite drops
+  their diffuse term too. Two more volumes hold metallic / roughness and the base colour per voxel.
+- **Glossy reflections**: the near-field pass reads the probes of cascade 0 in the mirror direction, blending the 4 nearest of
+  their 16 directions (a single nearest direction gave large square facets), and weights it with Schlick's Fresnel using the
+  voxel's base colour. Two bugs found on the way, with debug views (`world_spec`, `world_metal`, `--mattest`): the material
+  lookup missed many pixels of a curved surface (it now searches up to four voxels inwards), and the Fresnel colour came from the
+  unshaded render, where Godot draws a metal nearly black, so metals reflected nothing. A few dark specks remain.
+- **A television**: its screen is a moving box (like the dolly) whose emission is voxelized every frame into a volume of its own,
+  so its slowly changing colour lights the dark room at once. The cross-fade never flashes.
+- Cost not measured: the lab window was open on the same GPU during these runs (Godot alone measured 6.7 ms instead of 1.7 ms).
+  The near-field pass, where the reflections were added, measured the same as before (0.36 ms).
