@@ -411,6 +411,8 @@ func _build_gi(body: VBoxContainer) -> void:
 		"A surface counts as at most this bright when it lights others (stops fireflies from the lamps).", "%.0f")
 	_slider(body, "Probe lookup offset (m)", 0.05, 0.8, 0.05, effect.gather_bias, func(v): effect.gather_bias = v,
 		"How far from the surface the probes are read. Larger = fewer leaks near walls, softer corners.")
+	_slider(body, "More bounces", 0.0, 1.0, 0.05, effect.bounce, func(v): effect.bounce = v,
+		"Light keeps bouncing: last frame's probe light is added to every lit surface. 0 = a single bounce (corners and corridors go dark).")
 	_heading(body, "Image quality")
 	_check(body, "Jittered rays", effect.jitter, func(v): effect.jitter = v,
 		"Each pixel starts its rays at a random point every frame: the straight lines of the voxel and probe grids turn into noise that the temporal blend removes.")
@@ -442,6 +444,21 @@ func _build_quality(body: VBoxContainer) -> void:
 	_cascade_option = _option(body, "Cascades", _cascade_values, effect.cascades, func(v): _pending["cascades"] = int(v),
 		"How many ray ranges. The last one must reach across the volume; fewer = cheaper, farther light is lost.")
 	_button(body, "Apply and rebuild", apply_quality, "Voxelize the scene again with these settings.")
+	var aa_keys := ["off", "fxaa", "smaa", "taa", "msaa"]
+	var aa_row := HBoxContainer.new()
+	var aa_l := Label.new()
+	aa_l.text = "Anti-aliasing"
+	aa_l.custom_minimum_size.x = LABEL_W
+	aa_row.add_child(aa_l)
+	var aa := OptionButton.new()
+	aa.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	aa.tooltip_text = "Smooths the jagged edges of the geometry. SMAA: sharp and cheap. TAA: smoothest, a little blur in motion. MSAA 4x: exact edges, costs the most."
+	for t in ["Off", "FXAA", "SMAA", "TAA", "MSAA 4x"]:
+		aa.add_item(t)
+	aa.select(aa_keys.find(main.aa_mode))
+	aa.item_selected.connect(func(i: int): main.set_aa(aa_keys[i]))
+	aa_row.add_child(aa)
+	body.add_child(aa_row)
 
 
 func _build_scene(body: VBoxContainer) -> void:
@@ -455,6 +472,8 @@ func _build_scene(body: VBoxContainer) -> void:
 		"A lamp at the bend of the corridor (off by default): see light travel back towards the store.", "%.1f")
 	_slider(body, "Sun", 0.0, 10.0, 0.1, main.sun_value, func(v): main.set_sun(v),
 		"Daylight: a sun and a sky through the windows.", "%.1f")
+	_slider(body, "Glowing surfaces", 0.0, 4.0, 0.1, effect.emission_scale, func(v): effect.emission_scale = v,
+		"How much the TV screen and the neon sign in the corridor light the scene (they have no lamp: only the bounce carries their light).")
 	_slider(body, "Dolly lamp", 0.0, 20.0, 0.5, shop.dolly_lamp.light_energy, func(v): shop.dolly_lamp.light_energy = v,
 		"The work lamp on the rolling dolly.", "%.1f")
 	_check(body, "Dolly rolls", main.anim_auto, func(v): main.anim_auto = v,

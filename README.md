@@ -26,6 +26,15 @@ The world-space version is the main one. Per frame it:
 
 Moving objects are drawn as boxes into their own volume each frame, and lights can move or change colour.
 
+- **More bounces**: last frame's probe light is added to every lit surface, so light keeps bouncing (the feedback converges
+  because surfaces absorb part of it); corridors and corners are no longer black.
+- **Glowing surfaces light the scene**: emissive materials (a TV screen, a neon sign) are voxelized with their emission and act
+  as light sources through the bounce alone, with no lamp.
+
+![One bounce against more bounces, bounce light only](docs/readme/more_bounces.jpg)
+
+![A neon sign as the only light at the end of the corridor](docs/readme/neon.jpg)
+
 Three things keep the per-frame cost down:
 
 - **Static geometry is voxelized on the GPU** straight from the meshes' vertex and index arrays, so a prop can be moved and the
@@ -108,6 +117,7 @@ Run with a flag after `--` and the lab writes images and numbers to `out/` (git-
 | `--bench` | GPU time with the effect off and on, and per pass |
 | `--pop` | frame-to-frame jumps at fixed floor points while the dolly moves past (flicker) |
 | `--artifacts` | close views with and without the image-quality fixes, camera still and moving |
+| `--aatest` | the same views with each anti-aliasing mode |
 | `--flicker` | 16 consecutive frames per configuration, camera still and moving; `py tools/flicker_report.py` measures the shimmer |
 | `--uitest` | drives the control panel (views, object picker, split view, presets, reset) and checks the values come back |
 
@@ -146,8 +156,10 @@ What the three optimizations saved (same machine, 1920x1080, shop, `--bench`; ol
 The image-quality fixes cost time in the final pass (same machine, nothing moving): 0.72 ms without them, 1.63 ms with all three
 (clean edges about 0.5 ms, the filter about 0.4 ms, jitter nothing measurable); whole frame 2.69 ms (372 FPS) -> 3.62 ms (277 FPS).
 
-The lab starts at the **High** preset (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per pixel): 7.02 ms per frame
-(142 FPS) against 1.85 ms (541 FPS) for Godot alone, at 1920x1080; `--quality=default` starts at the cheaper settings (6.33 ms).
+The lab starts at the **High** preset (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per pixel) with Godot's TAA:
+5.31 ms per frame (188 FPS) against 1.66 ms (603 FPS) for Godot alone, at 1920x1080, nothing moving; 6.41 ms (156 FPS) with the
+dolly rolling. Per pass: cascades 1.56 ms, near-field rays 0.39 ms, final pass 1.95 ms, re-lighting 0.10 ms (0.39 ms with the
+dolly moving). `--quality=default` starts at the cheaper settings.
 
 These numbers come from a fast desktop GPU with other programs running; treat them as orders of magnitude.
 

@@ -709,3 +709,16 @@ edge every frame).
 | Close view of the box, after | 0.1 % | 1.4 % |
 
   The blend costs a little: final pass 1.63 -> 1.95 ms at the older settings (more edge pixels gather the wide window).
+
+
+---
+
+# Step 10: more bounces, glowing surfaces, a cheaper final pass, anti-aliasing
+
+| Change | What it does | Measured (1920x1080, High, RX 9070 XT) |
+|---|---|---|
+| **Cheaper final pass** | The tile's direction table is computed once per group (it was recomputed for every neighbour) and the weights use plain multiplications. | Final pass 2.96 -> 1.93 ms; frame 7.02 -> 5.07 ms (142 -> 197 FPS). A first try that copied every group's pixels into shared memory was **three times slower** (8.93 ms: low occupancy, many duplicate loads) and was dropped. |
+| **More bounces** | `ambient.comp` sums cascade 0 into an ambient cube per probe; the injection adds that irradiance, times the albedo and `bounce` (0.8), to every lit voxel, so the light bounces once more every frame. With it on, the whole volume is re-lit every 4th frame. | Bounce-only brightness +7-10 % in the store; at the corridor bend 1.0 -> 5.0 (0-255), dark pixels in the aisle 31 -> 46. Re-lighting 0.006 -> 0.10 ms with nothing moving. |
+| **Glowing surfaces** | Emissive materials are voxelized with their emission into their own volume, added to the light of their voxels. A TV screen and a neon sign at the dark end of the corridor light their surroundings with no lamp. | Part of the re-lighting cost above. |
+| **History-aware filter** | Each pixel keeps how many frames its history has; a short history is averaged over its frames so far and filtered twice as wide. | **No measurable gain**: pixels shimmering with the camera moving 2.27 % -> 2.22 % (noise). Left on: it costs nothing. |
+| **Anti-aliasing** | Off, FXAA, SMAA, TAA (Godot's) or MSAA 4x in the Quality tab; **TAA is the default**. | Same cost within noise (5.21-5.36 ms). With a still camera TAA halves the shimmer (0.45 % -> 0.20 % of pixels); moving, the bounce light shimmers the same with SMAA and TAA (2.2 %). |

@@ -2,6 +2,11 @@
 // weighted by depth, normal and cosine. That one-frame estimate is then blended with the previous frame's result,
 // reprojected to where this world point was and validated by depth and normal; the tile shifts every frame, so
 // over a few frames every pixel has seen many directions. The result is added to the colour.
+//
+// Pass 0: gather + temporal (+ composite when the filter is off). Pass 1: edge-aware filter + composite.
+// The neighbours are read straight from the textures (the texture cache serves them well; copying a bordered tile into shared
+// memory was measured three times slower: low occupancy and many duplicate loads). Only the small table of the tile's directions
+// is shared: it was recomputed for every neighbour.
 
 layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
@@ -11,7 +16,7 @@ layout(set = 0, binding = 11) uniform sampler2D albedo_tex; // unshaded albedo r
 layout(set = 0, binding = 12, rgba16f) uniform restrict readonly image2D near_img;
 layout(set = 0, binding = 13, rgba16f) uniform restrict readonly image2D nrm_img;
 layout(set = 0, binding = 16, rgba16f) uniform restrict readonly image2D nrm_prev;
-layout(set = 0, binding = 17, rgba16f) uniform restrict readonly image2D hist_prev;
+layout(set = 0, binding = 17, rgba16f) uniform restrict readonly image2D hist_prev; // rgb = bounce light, a = history length (frames)
 layout(set = 0, binding = 18, rgba16f) uniform restrict writeonly image2D hist_cur;
 
 layout(push_constant, std430) uniform Final {
@@ -20,6 +25,9 @@ layout(push_constant, std430) uniform Final {
 } pc;
 
 //#include screen.inc
+
+const int MAX_DIRS = 100;
+shared vec4 s_dir[MAX_DIRS]; // per direction of the tile: unit vector, solid-angle weight
 
 vec3 srgb_to_linear(vec3 c) {
 	return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(vec3(0.04045), c));
@@ -41,48 +49,53 @@ vec3 heat(float v) {
 	return mix(c4, c5, t - 4.0);
 }
 
-// Adds up the per-pixel rays of the pixels in a square of half size h around p, weighted by depth, normal and cosine.
-// ws_all is the weight the same window would have if no neighbour were rejected (to tell how much of it survived).
+// Adds up the per-pixel rays of the pixels in a square of half size h around the pixel at `local` (in its group), weighted by
+// depth, normal and cosine. ws_all is the weight the window would have if no neighbour were rejected.
+float pow8(float x) {
+	x *= x;
+	x *= x;
+	return x * x;
+}
+
 void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, inout vec3 acc, inout float ws, inout float ws_all) {
 	ivec2 sz = ivec2(P.screen.xy);
 	for (int oy = -h; oy < max(na - h, h + 1); oy++) {
 		for (int ox = -h; ox < max(na - h, h + 1); ox++) {
 			ivec2 q = clamp(p + ivec2(ox, oy), ivec2(0), sz - 1);
-			vec3 v = oct_vec(ivec2((q.x + shift.x) % na, (q.y + shift.y) % na), na);
-			float wa = pow(dot(v, v), -1.5);
-			ws_all += wa;
+			vec4 dv = s_dir[((q.y + shift.y) % na) * na + (q.x + shift.x) % na];
+			ws_all += dv.w;
 			vec4 nq = imageLoad(nrm_img, q);
 			if (nq.w <= 0.0) {
 				continue;
 			}
 			float dz = (nq.w - dp) / (0.04 * dp + 0.02);
-			float w = exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 8.0);
+			float w = exp(-dz * dz) * pow8(max(dot(n, nq.xyz), 0.0));
 			if (w < 1e-4) {
 				continue;
 			}
-			float cosv = max(dot(normalize(v), n), 0.0);
-			acc += imageLoad(near_img, q).rgb * (w * wa * cosv);
-			ws += w * wa;
+			acc += imageLoad(near_img, q).rgb * (w * dv.w * max(dot(dv.xyz, n), 0.0));
+			ws += w * dv.w;
 		}
 	}
 }
 
-// Filter (C): an edge-aware average of the bounce light over a 7 x 7 window (the same depth and normal test as the gather, times
-// a Gaussian). It removes the 6 x 6 pattern the per-pixel directions leave, without blurring across the edges of objects.
-// In pass 1 `hist_prev` is bound to this frame's result.
-vec3 filtered(ivec2 p, vec3 n, float dp) {
+// Filter: an edge-aware average of the bounce light over a 7 x 7 window (depth and normal test, Gaussian). Where the history is
+// short (just uncovered by a moving object or the camera, so still noisy), the same 49 taps are spread twice as far.
+vec3 filtered(ivec2 p, vec3 n, float dp, float hist_len) {
 	ivec2 sz = ivec2(P.screen.xy);
+	int step_px = ((int(P.screen.w + 0.5) & 8) != 0 && hist_len < 4.0) ? 2 : 1;
 	vec3 acc = vec3(0.0);
 	float ws = 0.0;
 	for (int oy = -3; oy <= 3; oy++) {
 		for (int ox = -3; ox <= 3; ox++) {
-			ivec2 q = clamp(p + ivec2(ox, oy), ivec2(0), sz - 1);
+			ivec2 q = clamp(p + ivec2(ox, oy) * step_px, ivec2(0), sz - 1);
 			vec4 nq = imageLoad(nrm_img, q);
 			if (nq.w <= 0.0) {
 				continue;
 			}
 			float dz = (nq.w - dp) / (0.03 * dp + 0.015);
-			float w = exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 16.0) * exp(-float(ox * ox + oy * oy) / 8.0);
+			float c = pow8(max(dot(n, nq.xyz), 0.0));
+			float w = exp(-dz * dz) * c * c * exp(-float(ox * ox + oy * oy) / 8.0);
 			acc += w * imageLoad(hist_prev, q).rgb;
 			ws += w;
 		}
@@ -119,6 +132,24 @@ void composite(ivec2 p, vec3 gi_t) {
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 sz = ivec2(P.screen.xy);
+	int flags = int(P.screen.w + 0.5);
+	bool filter_pass = pc.b.x > 0.5;
+	int na = int(pc.a.y + 0.5);
+	bool edge_fix = (flags & 2) != 0;
+
+	// The direction table first, by every thread of the group (no early return before the barrier).
+	if (!filter_pass && int(gl_LocalInvocationIndex) < na * na) {
+		int i = int(gl_LocalInvocationIndex);
+		vec3 v = oct_vec(ivec2(i % na, i / na), na);
+		s_dir[i] = vec4(normalize(v), pow(dot(v, v), -1.5));
+	}
+	if (!filter_pass && na * na > 64 && int(gl_LocalInvocationIndex) + 64 < na * na) {
+		int i = int(gl_LocalInvocationIndex) + 64;
+		vec3 v = oct_vec(ivec2(i % na, i / na), na);
+		s_dir[i] = vec4(normalize(v), pow(dot(v, v), -1.5));
+	}
+	barrier();
+
 	if (any(greaterThanEqual(p, sz))) {
 		return;
 	}
@@ -128,24 +159,23 @@ void main() {
 	}
 	vec3 n = np.xyz;
 	float dp = np.w;
-	bool filter_on = (int(P.screen.w + 0.5) & 4) != 0;
-	if (pc.b.x > 0.5) {
-		composite(p, filtered(p, n, dp));
+	bool filter_on = (flags & 4) != 0;
+	if (filter_pass) {
+		composite(p, filtered(p, n, dp, imageLoad(hist_prev, p).a));
 		return;
 	}
-	int na = int(pc.a.y + 0.5);
 	ivec2 shift = ivec2(int(pc.a.z + 0.5), int(pc.a.w + 0.5));
 	vec3 acc = vec3(0.0);
 	float ws = 0.0;
 	float ws_all = 0.0;
 	gather_window(p, n, dp, na, shift, na / 2, acc, ws, ws_all);
-	// Edge fallback (B): at the edge of an object, the neighbours across the edge are rejected and the pixel is left with part of
-	// the tile's directions: a biased value that repeats every tile (a dashed line along the silhouette). There the rays are also
+	// Edge fallback: at the edge of an object, the neighbours across the edge are rejected and the pixel is left with part of the
+	// tile's directions: a biased value that repeats every tile (a dashed line along the silhouette). There the rays are also
 	// gathered over a window two tiles wide, so every direction is found on this side of the edge, and the two results are blended
 	// by how much of the small window survived (a hard switch would flip from frame to frame as the tile shifts: edges would shimmer).
 	float coverage = ws_all > 0.0 ? ws / ws_all : 0.0;
 	vec3 gi = ws > 0.0 ? 4.0 * acc / ws : vec3(0.0);
-	if ((int(P.screen.w + 0.5) & 2) != 0 && coverage < 0.9) {
+	if (edge_fix && coverage < 0.9) {
 		vec3 acc2 = vec3(0.0);
 		float ws2 = 0.0;
 		float ws_all2 = 0.0;
@@ -157,6 +187,7 @@ void main() {
 
 	// Temporal: where was this world point in the previous frame?
 	vec3 gi_t = gi;
+	float hist_len = 1.0;
 	if (P.extra.y > 0.5) {
 		float d = texelFetch(depth_tex, p, 0).r;
 		vec3 pw = (P.cam_to_world * vec4(view_pos(p, d), 1.0)).xyz;
@@ -165,7 +196,7 @@ void main() {
 			vec2 pp = (pcp.xy / pcp.w * 0.5 + 0.5) * P.screen.xy - 0.5;
 			ivec2 p0 = ivec2(floor(pp));
 			vec2 f = pp - vec2(p0);
-			vec3 hacc = vec3(0.0);
+			vec4 hacc = vec4(0.0);
 			float hw = 0.0;
 			for (int k = 0; k < 4; k++) {
 				ivec2 o = ivec2(k & 1, k >> 1);
@@ -180,11 +211,12 @@ void main() {
 				float dz = (nq.w - pcp.w) / (0.04 * pcp.w + 0.02);
 				float bw = (o.x == 1 ? f.x : 1.0 - f.x) * (o.y == 1 ? f.y : 1.0 - f.y);
 				float w = bw * exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 8.0);
-				hacc += w * imageLoad(hist_prev, q).rgb;
+				hacc += w * imageLoad(hist_prev, q);
 				hw += w;
 			}
 			if (hw > 0.05) {
-				vec3 hist = hacc / hw;
+				vec3 hist = hacc.rgb / hw;
+				hist_len = min(hacc.a / hw + 1.0, 32.0);
 				// Follow real changes fast: the more the new estimate differs from the history, the more of it we take. The per-pixel
 				// directions make every frame differ a little (noise); only the part of the difference above the noise floor counts,
 				// or the noise itself would be taken as change and every pixel would shimmer.
@@ -193,12 +225,14 @@ void main() {
 				float change = max(diff - floor_n, 0.0) / max(1.0 - floor_n, 0.05);
 				change *= smoothstep(P.sky.w, 2.0 * P.sky.w, length(gi - hist)); // and only if the change is not tiny in absolute terms
 				change *= smoothstep(0.6, 0.95, coverage); // near edges the new estimate is the least reliable: lean on the history
-				float alpha = clamp(P.extra.z + change * P.extra.w, P.extra.z, 0.9);
+				// A young history is an average of all its frames so far (1/length), then settles to the normal weight.
+				float young = (int(P.screen.w + 0.5) & 8) != 0 ? 1.0 / hist_len : 0.0;
+				float alpha = clamp(max(P.extra.z, young) + change * P.extra.w, P.extra.z, 0.9);
 				gi_t = mix(hist, gi, alpha);
 			}
 		}
 	}
-	imageStore(hist_cur, p, vec4(gi_t, 1.0));
+	imageStore(hist_cur, p, vec4(gi_t, hist_len));
 	if (!filter_on) {
 		composite(p, gi_t);
 	}

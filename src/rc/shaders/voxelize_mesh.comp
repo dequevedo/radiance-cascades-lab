@@ -5,6 +5,7 @@
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 
 layout(set = 0, binding = 1, rgba8) uniform restrict writeonly image3D vox_albedo;
+layout(set = 0, binding = 2, rgba16f) uniform restrict writeonly image3D vox_emit; // emission rgb, a = 1 where emissive
 layout(set = 0, binding = 5, std430) restrict readonly buffer Verts {
 	float v[]; // world-space positions, x y z packed
 } verts;
@@ -13,8 +14,9 @@ layout(set = 0, binding = 6, std430) restrict readonly buffer Indices {
 } indices;
 
 layout(push_constant, std430) uniform Surface {
-	vec4 a;      // triangle count, first index, first vertex
-	vec4 albedo; // rgb
+	vec4 a;        // triangle count, first index, first vertex
+	vec4 albedo;   // rgb
+	vec4 emission; // rgb (colour x energy), 0 = not emissive
 } pc;
 
 bool axis_separates(vec3 axis, vec3 v0, vec3 v1, vec3 v2, vec3 h) {
@@ -78,6 +80,9 @@ void main() {
 			for (int x = lo.x; x <= hi.x; x++) {
 				if (tri_box_overlap(vec3(x, y, z) + 0.5, vec3(0.5), a, b, c)) {
 					imageStore(vox_albedo, ivec3(x, y, z), vec4(pc.albedo.rgb, 1.0));
+					if (dot(pc.emission.rgb, vec3(1.0)) > 0.0) {
+						imageStore(vox_emit, ivec3(x, y, z), vec4(pc.emission.rgb, 1.0));
+					}
 				}
 			}
 		}

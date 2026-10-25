@@ -1,0 +1,38 @@
+// One thread = one probe of cascade 0: the light arriving at the probe, summed into an "ambient cube" (the irradiance a surface
+// facing +x, -x, +y, -y, +z or -z would receive there). The injection reads it to add the next bounce to every lit voxel, so with
+// each frame the light bounces once more: one bounce becomes many (the feedback converges because surfaces absorb part of it).
+
+layout(local_size_x = 4, local_size_y = 4, local_size_z = 4) in;
+
+layout(set = 0, binding = 10, rgba16f) uniform restrict readonly image3D c0_img;
+layout(set = 0, binding = 22, rgba16f) uniform restrict writeonly image3D amb_img; // x = probe x * 6 + face
+
+layout(push_constant, std430) uniform Amb {
+	vec4 a; // a_0 (directions per axis of cascade 0)
+} pc;
+
+void main() {
+	ivec3 q = ivec3(gl_GlobalInvocationID);
+	if (any(greaterThanEqual(q, grid_of(P.misc.x)))) {
+		return;
+	}
+	int a0 = int(pc.a.x + 0.5);
+	vec3 e[6] = vec3[6](vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0), vec3(0.0));
+	for (int j = 0; j < a0; j++) {
+		for (int i = 0; i < a0; i++) {
+			vec3 d = normalize(oct_vec(ivec2(i, j), a0));
+			vec3 l = imageLoad(c0_img, ivec3(q.x * a0 + i, q.y * a0 + j, q.z)).rgb;
+			e[0] += l * max(d.x, 0.0);
+			e[1] += l * max(-d.x, 0.0);
+			e[2] += l * max(d.y, 0.0);
+			e[3] += l * max(-d.y, 0.0);
+			e[4] += l * max(d.z, 0.0);
+			e[5] += l * max(-d.z, 0.0);
+		}
+	}
+	// The same normalisation as the screen gather: uniform light L gives L.
+	float k = 4.0 / float(a0 * a0);
+	for (int f = 0; f < 6; f++) {
+		imageStore(amb_img, ivec3(q.x * 6 + f, q.y, q.z), vec4(e[f] * k, 1.0));
+	}
+}

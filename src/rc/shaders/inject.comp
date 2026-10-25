@@ -7,6 +7,9 @@ layout(set = 0, binding = 1, rgba8) uniform restrict readonly image3D vox_albedo
 layout(set = 0, binding = 3, rgba16f) uniform restrict writeonly image3D vox_rad;
 layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
 layout(set = 0, binding = 21, rgba8) uniform restrict readonly image3D vox_dyn; // moving objects: albedo + coverage
+layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
+layout(set = 0, binding = 22, rgba16f) uniform restrict readonly image3D amb_img; // last frame's ambient cubes (ambient.comp)
+layout(set = 0, binding = 23, rgba16f) uniform restrict readonly image3D emit_img; // emission of the static surfaces (rgb, a = emissive)
 layout(set = 0, binding = 4, std430) restrict readonly buffer Lights {
 	vec4 l[]; // per light: (pos, range), (color*energy, type 0=omni 1=directional), (dir to light, decay)
 } lights;
@@ -14,8 +17,43 @@ layout(set = 0, binding = 4, std430) restrict readonly buffer Lights {
 //#include trace.inc
 
 layout(push_constant, std430) uniform Region {
-	vec4 o; // first voxel of the region being re-lit (the dispatch covers the region only)
+	vec4 o; // xyz: first voxel of the region being re-lit (the dispatch covers the region only); w: next-bounce gain (0 = one bounce)
+	vec4 b; // x: emission scale
 } region;
+
+// The next bounce: the irradiance last frame's probes saw around this point, for a surface facing n. The 8 probes around the
+// point are blended like a trilinear lookup, but a probe inside a wall or behind the surface does not count.
+vec3 ambient_at(vec3 pos, vec3 n) {
+	float sp = P.misc.x;
+	ivec3 grid = grid_of(sp);
+	vec3 qf = (pos - P.vol_min.xyz) / sp - 0.5;
+	ivec3 q0 = ivec3(floor(qf));
+	vec3 fr = qf - vec3(q0);
+	vec3 n2 = n * n;
+	vec3 acc = vec3(0.0);
+	float ws = 0.0;
+	for (int k = 0; k < 8; k++) {
+		ivec3 o = ivec3(k & 1, (k >> 1) & 1, k >> 2);
+		ivec3 q = q0 + o;
+		if (any(lessThan(q, ivec3(0))) || any(greaterThanEqual(q, grid))) {
+			continue;
+		}
+		vec3 qpos = P.vol_min.xyz + (vec3(q) + 0.5) * sp;
+		vec3 quvw = (qpos - P.vol_min.xyz) / (P.vol_dims.xyz * P.vol_min.w);
+		float open = 1.0 - clamp(textureLod(occ_tex, quvw, 0.0).a * OCC_GAIN, 0.0, 1.0);
+		float front = smoothstep(-0.2, 0.3, dot(normalize(qpos - pos + n * 1e-3), n));
+		float w = (o.x == 1 ? fr.x : 1.0 - fr.x) * (o.y == 1 ? fr.y : 1.0 - fr.y) * (o.z == 1 ? fr.z : 1.0 - fr.z) * open * front;
+		if (w < 1e-4) {
+			continue;
+		}
+		vec3 e = n2.x * imageLoad(amb_img, ivec3(q.x * 6 + (n.x > 0.0 ? 0 : 1), q.y, q.z)).rgb
+			+ n2.y * imageLoad(amb_img, ivec3(q.x * 6 + (n.y > 0.0 ? 2 : 3), q.y, q.z)).rgb
+			+ n2.z * imageLoad(amb_img, ivec3(q.x * 6 + (n.z > 0.0 ? 4 : 5), q.y, q.z)).rgb;
+		acc += w * e;
+		ws += w;
+	}
+	return ws > 1e-3 ? acc / ws : vec3(0.0);
+}
 
 bool solid2(ivec3 c) {
 	return solid_cell(c) || imageLoad(vox_dyn, c).a > 0.5;
@@ -153,5 +191,8 @@ void main() {
 		}
 		direct += b.rgb * (cosv * atten * lit);
 	}
-	imageStore(vox_rad, c, vec4(alb.rgb * direct, 1.0));
+	vec3 bounce = region.o.w > 0.0 ? region.o.w * min(ambient_at(pos, n), vec3(P.tune.z)) : vec3(0.0);
+	vec4 em = imageLoad(emit_img, c);
+	vec3 emission = em.a > 0.5 ? em.rgb * region.b.x : vec3(0.0);
+	imageStore(vox_rad, c, vec4(alb.rgb * (direct + bounce) + emission, 1.0));
 }

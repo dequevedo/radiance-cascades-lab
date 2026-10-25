@@ -45,10 +45,11 @@ var selectables: Array[Node3D] = [] # the props the object picker can select and
 
 
 ## The props, as boxes: [centre (pivot at the bottom centre, +z = front), size, colour, emission]. Sizes are real-world metres,
-## so the light bounces off things of the right size; the look is deliberately plain.
+## so the light bounces off things of the right size; the look is deliberately plain. Emission > 0: the part glows and lights the
+## scene through the bounce; < 0: it only glows (the fluorescent tubes, whose light is an OmniLight3D already).
 const KIT := {
 	"fluorescent_fixture": [[Vector3(0, 0.03, 0), Vector3(1.24, 0.06, 0.22), Color(0.85, 0.85, 0.82), 0.0],
-		[Vector3(0, -0.01, 0), Vector3(1.18, 0.03, 0.12), Color(0.85, 1.0, 0.9), 3.0]],
+		[Vector3(0, -0.01, 0), Vector3(1.18, 0.03, 0.12), Color(0.85, 1.0, 0.9), -3.0]],
 	"shelf_metal": [[Vector3(0, 0.9, -0.2), Vector3(1.0, 1.8, 0.04), Color(0.72, 0.72, 0.7), 0.0],
 		[Vector3(0, 0.22, 0), Vector3(1.0, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
 		[Vector3(0, 0.636, 0), Vector3(1.0, 0.03, 0.42), Color(0.75, 0.75, 0.73), 0.0],
@@ -67,7 +68,8 @@ const KIT := {
 		[Vector3(0, 0.25, -0.1), Vector3(0.3, 0.1, 0.12), Color(0.25, 0.25, 0.27), 0.0]],
 	"scale_analog": [[Vector3(0, 0.12, 0), Vector3(0.3, 0.24, 0.28), Color(0.85, 0.2, 0.18), 0.0]],
 	"tv_crt": [[Vector3(0, 0.35, 0), Vector3(0.6, 0.7, 0.45), Color(0.3, 0.22, 0.15), 0.0],
-		[Vector3(0, 0.93, 0), Vector3(0.56, 0.46, 0.46), Color(0.2, 0.2, 0.2), 0.0]],
+		[Vector3(0, 0.93, 0), Vector3(0.56, 0.46, 0.46), Color(0.2, 0.2, 0.2), 0.0],
+		[Vector3(0, 0.95, 0.235), Vector3(0.44, 0.33, 0.02), Color(0.55, 0.75, 1.0), 2.5]],
 	"wall_clock": [[Vector3(0, 0.0, 0), Vector3(0.34, 0.34, 0.05), Color(0.9, 0.88, 0.8), 0.0]],
 	"storage_cabinet": [[Vector3(0, 0.95, 0), Vector3(0.9, 1.9, 0.45), Color(0.55, 0.6, 0.55), 0.0]],
 	"upright_fridge": [[Vector3(0, 0.95, 0), Vector3(0.7, 1.9, 0.7), Color(0.9, 0.9, 0.88), 0.0]],
@@ -94,12 +96,13 @@ func prop(parent: Node, path: String, pos: Vector3, yaw := 0.0) -> Node3D:
 	n.name = path.get_file().to_pascal_case()
 	for part in KIT[path.get_file()]:
 		var b := box(n, part[0], part[1], part[2])
-		if part[3] > 0.0:
+		if part[3] != 0.0:
 			var mat := b.material_override as StandardMaterial3D
 			mat.emission_enabled = true
 			mat.emission = part[2]
-			mat.emission_energy_multiplier = part[3]
-			b.set_meta("rc_skip", true) # a glowing tube is a light, not something that blocks light
+			mat.emission_energy_multiplier = absf(part[3])
+			if part[3] < 0.0:
+				b.set_meta("rc_skip", true) # a glowing tube whose light is a lamp already: not part of the voxels
 	n.position = pos
 	n.rotation.y = yaw
 	parent.add_child(n)
@@ -365,6 +368,7 @@ func build(m: Node3D) -> void:
 		"dolly": [Vector3(-1.2, 1.3, 2.6), Vector3(0.6, 0.6, 0.3)],
 		"corridor_mouth": [Vector3(-4.2, 1.6, 0.3), Vector3(-12.0, 1.3, 0.3)],
 		"corridor_bend": [Vector3(cor_path(9.0)[0]) + Vector3(0, 1.6, 0), Vector3(cor_path(15.5)[0]) + Vector3(0, 1.3, 0)],
+		"corridor_neon": [Vector3(cor_path(COR_A + COR_R * PI * 0.5 + 1.5)[0]) + Vector3(0, 1.6, 0), Vector3(cor_path(COR_A + COR_R * PI * 0.5 + COR_B - 2.0)[0]) + Vector3(0, 1.4, 0)],
 		"corridor_end": [Vector3(cor_path(COR_A + COR_R * PI * 0.5 + 5.5)[0]) + Vector3(0, 1.6, 0), Vector3(cor_path(COR_A + 1.0)[0]) + Vector3(0, 1.2, 0)],
 	}
 
@@ -454,6 +458,17 @@ func build_corridor(parent: Node) -> void:
 	cor_strip(parent, Color(0.2, 0.52, 0.56), [ # left wall: the inside of the turn
 		{"e0": func(c, r): return c - r * hw, "e1": func(c, r): return c - r * hw + up * h, "n": func(r): return r},
 		{"e0": func(c, r): return c - r * (hw + t) - up * t, "e1": func(c, r): return c - r * (hw + t) + up * (h + t), "n": func(r): return -r}])
+	# A neon sign near the far end, the only light of that part of the corridor: it lights its surroundings through the bounce alone.
+	var ns := COR_A + COR_R * PI * 0.5 + COR_B - 2.0
+	var np := cor_path(ns)
+	var nr: Vector3 = (np[1] as Vector3).cross(Vector3.UP)
+	var neon := box(parent, (np[0] as Vector3) - nr * (hw - 0.04) + up * 2.2, Vector3(0.05, 0.12, 1.2), Color(1.0, 0.25, 0.6),
+		atan2(-(np[1] as Vector3).x, -(np[1] as Vector3).z))
+	var nm := neon.material_override as StandardMaterial3D
+	nm.emission_enabled = true
+	nm.emission = Color(1.0, 0.25, 0.6)
+	nm.emission_energy_multiplier = 4.0
+	neon.name = "NeonSign"
 	# Closed at the far end, so nothing leaks out of it.
 	var e := cor_path(COR_A + COR_R * PI * 0.5 + COR_B)
 	var eh: Vector3 = e[1]

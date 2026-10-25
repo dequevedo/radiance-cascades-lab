@@ -43,6 +43,7 @@ var collect_ms := 0.0
 var look_mode := false # the quote key: the mouse looks around (captured), like a game; off = the cursor is free, like an editor
 var _rmb_held := false # editor mode: holding the right button looks around
 var fly_speed := 4.0 # m/s, the mouse wheel changes it
+var aa_mode := "taa" # anti-aliasing of the geometry: off | fxaa | smaa | taa | msaa
 var hidden_run := OS.get_environment("RC_LAB_NO_MOUSE_CAPTURE") == "1" # automated runs in a hidden window must never capture or clip the real mouse
 var _box_nodes := []
 
@@ -73,8 +74,11 @@ func _ready() -> void:
 	effect_world.temporal_alpha = 0.2 if high else 0.25
 	effect_world.sky_radiance = Color.BLACK
 	effect_ss.sky_radiance = Color.BLACK
-	get_viewport().screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
 	get_viewport().use_debanding = true
+	for a in user_args:
+		if a.begins_with("--aa="):
+			aa_mode = a.trim_prefix("--aa=")
+	set_aa(aa_mode)
 	compositor = Compositor.new()
 	world_env.compositor = compositor
 	_make_albedo_viewport()
@@ -395,17 +399,20 @@ func _flicker(report: PackedStringArray) -> void:
 		"entrance": [Vector3(4.0, 1.6, 4.2), Vector3(-2.5, 1.3, -1.8)],
 		"cooler": [Vector3(4.55, 1.45, -3.15), Vector3(5.3, 0.25, -2.2)],
 	}
+	var base_aa := aa_mode # the reference "godot" frames use the same anti-aliasing as the run (--aa=...)
 	var base := {"jitter": effect_world.jitter, "edge_fix": effect_world.edge_fix, "denoise": effect_world.denoise,
 		"far_every": effect_world.far_every, "temporal_adaptive": effect_world.temporal_adaptive, "temporal_alpha": effect_world.temporal_alpha,
-		"temporal_noise_floor": effect_world.temporal_noise_floor, "temporal_min_change": effect_world.temporal_min_change}
-	var configs := [["godot", {}], ["before_fix", {"temporal_noise_floor": 0.0, "temporal_min_change": 0.0}], ["now", {}],
-		["no_adaptive", {"temporal_adaptive": 0.0}]]
+		"temporal_noise_floor": effect_world.temporal_noise_floor, "temporal_min_change": effect_world.temporal_min_change,
+		"bounce": effect_world.bounce, "history_aware": effect_world.history_aware}
+	var configs := [["godot", {}], ["now", {}], ["no_history_aware", {"history_aware": false}], ["no_bounce", {"bounce": 0.0}]]
 	for view in views:
 		for cfg in configs:
 			for k in base:
 				effect_world.set(k, base[k])
+			set_aa(cfg[1].get("aa", base_aa))
 			for k in cfg[1]:
-				effect_world.set(k, cfg[1][k])
+				if k != "aa":
+					effect_world.set(k, cfg[1][k])
 			_set_mode("off" if cfg[0] == "godot" else "world")
 			for motion in ["still", "moving"]:
 				cam.position = views[view][0]
@@ -420,6 +427,7 @@ func _flicker(report: PackedStringArray) -> void:
 					await _shot("flk_%s_%s_%s_%02d.png" % [view, cfg[0], motion, i])
 	for k in base:
 		effect_world.set(k, base[k])
+	set_aa(base_aa)
 	report.append("flicker: %d views x %d configs x still/moving x 16 frames" % [views.size(), configs.size()])
 
 
@@ -513,7 +521,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest")
 	if not harness:
 		_start_interactive()
 		return
@@ -523,6 +531,17 @@ func _run() -> void:
 		await _artifacts(report)
 	if user_args.has("--flicker"):
 		await _flicker(report)
+	if user_args.has("--aatest"):
+		anim_auto = false
+		for mode in ["off", "fxaa", "smaa", "taa", "msaa"]:
+			set_aa(mode)
+			for pose in ["entrance", "aisle"]:
+				_pose(pose)
+				_set_mode("world")
+				await _frames(60)
+				await _shot("aa_%s_%s.png" % [pose, mode])
+			report.append("aa %s: rendered" % mode)
+		set_aa("taa")
 	if user_args.has("--pop"):
 		for cfg in [["temporal ON ", true], ["temporal OFF", false]]:
 			effect_world.temporal = cfg[1]
@@ -609,6 +628,16 @@ func mode_text() -> String:
 		"ss": "Godot + screen-space bounce",
 		"ss_gi": "Screen-space bounce only (x%.0f brighter)" % view_gain}
 	return names.get(live_mode, live_mode)
+
+
+## Anti-aliasing of the geometry's edges (the bounce light has its own filter): off, FXAA, SMAA, TAA (Godot's temporal AA) or
+## MSAA 4x.
+func set_aa(mode: String) -> void:
+	aa_mode = mode
+	var vp := get_viewport()
+	vp.screen_space_aa = {"fxaa": Viewport.SCREEN_SPACE_AA_FXAA, "smaa": Viewport.SCREEN_SPACE_AA_SMAA}.get(mode, Viewport.SCREEN_SPACE_AA_DISABLED)
+	vp.use_taa = mode == "taa"
+	vp.msaa_3d = Viewport.MSAA_4X if mode == "msaa" else Viewport.MSAA_DISABLED
 
 
 ## True when the cursor is free for the panel and the props (editor mode, right button not held).
