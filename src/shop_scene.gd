@@ -1,6 +1,6 @@
 extends RefCounted
 ## A small grocery store built from simple box props (no external assets).
-## Room 14 x 9.5 m, ceiling 3.4 m: front wall with two windows and a door, six ceiling fluorescents (one flickers),
+## Room 14 x 9.5 m, ceiling 3.4 m: front wall with two windows and a door, six ceiling fluorescents,
 ## a street lamp outside, gondolas stocked with products, a counter with a register, fridges and freezers,
 ## and a dolly of cartons (dynamic: moves, carries a work lamp) driven along the central aisle.
 ##
@@ -28,14 +28,12 @@ const VOLUME_SIZE := Vector3(28.0, 4.5, 19.25)
 
 var main: Node3D
 var rng := RandomNumberGenerator.new()
-var flicker_light: OmniLight3D
 var ceiling_lights: Array[OmniLight3D] = []
 var street_lamp: OmniLight3D
 var corridor_lamp: OmniLight3D
 var sun: DirectionalLight3D
 # Live settings (the panel changes these; animate() applies them every frame).
 var ceiling_scale := 1.0
-var flicker_on := true
 var street_energy := 60.0
 var corridor_lamp_energy := 0.0
 var sun_energy := 0.0
@@ -249,15 +247,13 @@ func build(m: Node3D) -> void:
 	box(S, Vector3(ROOM_X - 0.02, 0.6, 0), Vector3(0.04, 1.2, ROOM_Z * 2), Color(0.32, 0.45, 0.4))
 	box(S, Vector3(0, 0.6, -ROOM_Z + 0.02), Vector3(ROOM_X * 2, 1.2, 0.04), Color(0.32, 0.45, 0.4))
 
-	# Lights: six ceiling fluorescents (the middle one flickers) and a sodium street lamp outside the windows.
+	# Lights: six ceiling fluorescents and a sodium street lamp outside the windows.
 	var xs := [-4.5, 0.0, 4.5]
 	var zs := [-1.8, 2.2]
 	for x in xs:
 		for z in zs:
 			var l := ceiling_light(S, Vector3(x, 0, z))
 			ceiling_lights.append(l)
-			if x == 0.0 and z == -1.8:
-				flicker_light = l
 	var street := OmniLight3D.new()
 	street.position = Vector3(-2.8, 4.2, 7.5)
 	street.light_color = Color(1.0, 0.62, 0.28)
@@ -373,19 +369,11 @@ func build(m: Node3D) -> void:
 	}
 
 
-## Dolly position along the aisle for u in 0..1; a flicker on one ceiling light; the live light settings, at time t.
-func animate(u: float, t: float) -> void:
+## Dolly position along the aisle for u in 0..1 and the live light settings.
+func animate(u: float, _t: float) -> void:
 	dolly.position = Vector3(lerpf(-5.2, 4.6, u), 0.0, 0.3)
-	# A fluorescent that is dying: mostly on, with short dips.
-	var f := 1.0
-	if flicker_on:
-		var ph := fposmod(t * 2.3, 1.0)
-		if ph > 0.82 and ph < 0.9:
-			f = 0.15
-		elif ph > 0.93 and ph < 0.96:
-			f = 0.5
 	for l in ceiling_lights:
-		l.light_energy = 4.0 * ceiling_scale * (f if l == flicker_light else 1.0)
+		l.light_energy = 4.0 * ceiling_scale
 	street_lamp.light_energy = street_energy
 	corridor_lamp.light_energy = corridor_lamp_energy
 	sun.light_energy = sun_energy

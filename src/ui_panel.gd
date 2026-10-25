@@ -449,8 +449,6 @@ func _build_scene(body: VBoxContainer) -> void:
 		"The camera's brightness (Godot's tone mapping).")
 	_slider(body, "Ceiling lights", 0.0, 3.0, 0.05, shop.ceiling_scale, func(v): shop.ceiling_scale = v,
 		"The six fluorescents. 0 = the store is lit only by the street lamp.")
-	_check(body, "Flicker one ceiling light", shop.flicker_on, func(v): shop.flicker_on = v,
-		"The middle fluorescent dips now and then: a light that changes every frame.")
 	_slider(body, "Street lamp", 0.0, 150.0, 1.0, shop.street_energy, func(v): shop.street_energy = v,
 		"Sodium lamp outside the windows.", "%.0f")
 	_slider(body, "Corridor lamp", 0.0, 30.0, 0.5, shop.corridor_lamp_energy, func(v): shop.corridor_lamp_energy = v,

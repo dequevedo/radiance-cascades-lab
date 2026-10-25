@@ -125,7 +125,7 @@ func _build_shop() -> void:
 	_animate(0.0)
 
 
-## Dolly position along the aisle (lamp_s wins when the animation is off), the flickering light and the live light settings, at time t.
+## Dolly position along the aisle (lamp_s wins when the animation is off) and the live light settings, at time t.
 func _animate(t: float) -> void:
 	var span := 9.8
 	if anim_auto and not anim_paused:
@@ -355,7 +355,6 @@ func _ui_test(report: PackedStringArray) -> void:
 ## and camera moving (2 cm per frame, the shot taken while it moves), with the effect and with the bounce light alone.
 func _artifacts(report: PackedStringArray) -> void:
 	anim_auto = false
-	shop.flicker_on = false
 	var views := {
 		"cooler": [Vector3(4.55, 1.45, -3.15), Vector3(5.3, 0.25, -2.2)],
 		"shelves": [Vector3(-0.6, 1.3, 0.2), Vector3(-2.5, 0.7, -1.4)],
@@ -500,8 +499,6 @@ func _run() -> void:
 	if user_args.has("--bench"):
 		_pose("aisle")
 		anim_auto = not user_args.has("--still")
-		if user_args.has("--still"):
-			shop.flicker_on = false # --still: nothing moves and no light changes (what re-lighting only the changes saves)
 		await _bench("GI off", "off", 200, report)
 		await _bench("screen-space RC", "ss", 200, report)
 		await _bench("world RC (dynamic: voxels + lights redone every frame)", "world", 200, report)

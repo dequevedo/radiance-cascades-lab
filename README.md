@@ -24,7 +24,7 @@ The world-space version is the main one. Per frame it:
 3. adds short per-pixel rays for the near field (the first 0.5 m), so contact shadows and corners stay sharp;
 4. gathers the probes per pixel, with depth and normal weights, and blends with the previous frame (reprojected).
 
-Moving objects are drawn as boxes into their own volume each frame, and lights can move, change colour or flicker.
+Moving objects are drawn as boxes into their own volume each frame, and lights can move or change colour.
 
 Three things keep the per-frame cost down:
 
@@ -48,7 +48,7 @@ Three more keep the image clean (each can be switched off in the GI tab):
 
 ## The scene
 
-One scene holds everything: a 14 x 9.5 m store with ~230 box props, six fluorescents (one flickers), a sodium street lamp
+One scene holds everything: a 14 x 9.5 m store with ~230 box props, six fluorescents, a sodium street lamp
 outside the windows, an optional sun, a dolly with a work lamp that rolls along the aisle, and a curved corridor off the store
 with no lamp of its own, to see how far light travels round a bend.
 
