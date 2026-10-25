@@ -432,7 +432,7 @@ func _build_gi(body: VBoxContainer) -> void:
 func _build_quality(body: VBoxContainer) -> void:
 	var row := _grid(body, 3)
 	_button(row, "Low", func(): apply_preset("low"), "Cheaper: 25 cm voxels, probes 1 m apart, 16 directions per pixel tile.")
-	_button(row, "Default", reset_all, "The starting settings.")
+	_button(row, "Default", reset_all, "Back to the settings the lab starts with (the High preset).")
 	_button(row, "High", func(): apply_preset("high"), "Finer: 10 cm voxels, probes 0.35 m apart, 64 directions per pixel tile. Costs more.")
 	_label(body, "These change the size of the volumes: press Apply to voxelize again.", DIM)
 	_voxel_option = _option(body, "Voxel size (m)", _voxel_values, effect.voxel_size, func(v): _pending["voxel"] = v,

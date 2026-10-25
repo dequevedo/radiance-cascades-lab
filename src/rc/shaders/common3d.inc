@@ -8,12 +8,12 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	vec4 vol_min;      // xyz = world min, w = voxel size
 	vec4 vol_dims;     // xyz = dims in voxels, w = light count
 	vec4 tune;         // intensity, fallback albedo luma, max radiance, debug mode
-	vec4 sky;          // sky radiance rgb
+	vec4 sky;          // sky radiance rgb, w = temporal minimum change (absolute)
 	vec4 misc;         // c0 spacing, c0 interval length, gather bias (m), use albedo texture
 	vec4 extra;        // near range (m): per-pixel rays cover [0, near], probes start there; history valid; temporal alpha; adaptive gain
 	mat4 prev_vp;      // world -> previous frame clip (for reprojecting the history)
 	vec4 dyn_min;      // bounds of the moving objects (xyz), w = 1 when there are any
-	vec4 dyn_max;
+	vec4 dyn_max;      // w = temporal noise floor
 } P;
 
 const float SKY_DEPTH = 1e-6;

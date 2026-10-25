@@ -24,6 +24,8 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var near_dirs := 6 # directions per axis of the per-pixel tile (6 -> 36 directions, one per pixel of a 6x6 block)
 @export var temporal := true # blend with the reprojected previous frame (the tile of directions shifts every frame)
 @export var temporal_adaptive := 1.2 # extra weight of the new frame where it differs a lot from the history (0 = fixed alpha)
+@export var temporal_noise_floor := 0.45 # differences below this (relative) are noise, not change: they never speed the blend up
+@export var temporal_min_change := 0.03 # nor do differences below this (absolute radiance): in dim light a tiny change looks big in relative terms
 @export var temporal_alpha := 0.25 # weight of the new frame (lower = smoother but slower to follow changes)
 @export var dynamic := false # per frame: reset to the static voxels, add dynamic triangles, re-inject the lights
 @export var inject_partial := true # re-light only the part of the volume that a changed light or a moving object can affect
@@ -453,12 +455,12 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
-	p.append_array([sky_radiance.r, sky_radiance.g, sky_radiance.b, 0.0])
+	p.append_array([sky_radiance.r, sky_radiance.g, sky_radiance.b, temporal_min_change])
 	p.append_array([probe_spacing, interval0, gather_bias, 1.0 if use_albedo_tex else 0.0])
 	p.append_array([near, 1.0 if hist_valid else 0.0, alpha, temporal_adaptive])
 	_pack_mat(prev_vp, p)
 	p.append_array([_dyn_min.x, _dyn_min.y, _dyn_min.z, 1.0 if (dynamic and _dyn_count > 0) else 0.0])
-	p.append_array([_dyn_max.x, _dyn_max.y, _dyn_max.z, 0.0])
+	p.append_array([_dyn_max.x, _dyn_max.y, _dyn_max.z, temporal_noise_floor])
 	var bytes := p.to_byte_array()
 	rd.buffer_update(_ubo, 0, bytes.size(), bytes)
 

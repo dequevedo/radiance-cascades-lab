@@ -61,12 +61,16 @@ func _ready() -> void:
 	effect_world = RCW.new()
 	effect_world.dynamic = true
 	effect_world.use_albedo_texture = not user_args.has("--voxel-albedo")
-	# The store and the corridor: 28 x 4.5 x 19.25 m.
-	effect_world.voxel_size = 0.125
+	# The store and the corridor: 28 x 4.5 x 19.25 m, at the High preset (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per
+	# pixel tile); --quality=default starts at the older, cheaper settings (12.5 cm, 0.5 m, 6 x 6).
+	var high := not user_args.has("--quality=default")
+	effect_world.voxel_size = 0.1 if high else 0.125
 	var vs: Vector3 = SHOP.VOLUME_SIZE
-	effect_world.dims = Vector3i(ceili(vs.x / 0.125), ceili(vs.y / 0.125), ceili(vs.z / 0.125))
+	effect_world.dims = Vector3i(ceili(vs.x / effect_world.voxel_size), ceili(vs.y / effect_world.voxel_size), ceili(vs.z / effect_world.voxel_size))
 	effect_world.volume_min = SHOP.VOLUME_MIN
-	effect_world.probe_spacing = 0.5
+	effect_world.probe_spacing = 0.35 if high else 0.5
+	effect_world.near_dirs = 8 if high else 6
+	effect_world.temporal_alpha = 0.2 if high else 0.25
 	effect_world.sky_radiance = Color.BLACK
 	effect_ss.sky_radiance = Color.BLACK
 	get_viewport().screen_space_aa = Viewport.SCREEN_SPACE_AA_FXAA
@@ -381,6 +385,44 @@ func _artifacts(report: PackedStringArray) -> void:
 	report.append("artifacts: %d views x %d configs x 2 modes x still/moving" % [views.size(), configs.size()])
 
 
+## Flicker: nothing in the scene moves, the camera is still (then pans 1 cm per frame); 16 consecutive frames are saved per
+## configuration, so tools can measure how much each pixel changes from one frame to the next. Each configuration switches one
+## part of the effect off, to find which one makes the image shimmer.
+func _flicker(report: PackedStringArray) -> void:
+	anim_auto = false
+	lamp_s = 2.0
+	var views := {
+		"entrance": [Vector3(4.0, 1.6, 4.2), Vector3(-2.5, 1.3, -1.8)],
+		"cooler": [Vector3(4.55, 1.45, -3.15), Vector3(5.3, 0.25, -2.2)],
+	}
+	var base := {"jitter": effect_world.jitter, "edge_fix": effect_world.edge_fix, "denoise": effect_world.denoise,
+		"far_every": effect_world.far_every, "temporal_adaptive": effect_world.temporal_adaptive, "temporal_alpha": effect_world.temporal_alpha,
+		"temporal_noise_floor": effect_world.temporal_noise_floor, "temporal_min_change": effect_world.temporal_min_change}
+	var configs := [["godot", {}], ["before_fix", {"temporal_noise_floor": 0.0, "temporal_min_change": 0.0}], ["now", {}],
+		["no_adaptive", {"temporal_adaptive": 0.0}]]
+	for view in views:
+		for cfg in configs:
+			for k in base:
+				effect_world.set(k, base[k])
+			for k in cfg[1]:
+				effect_world.set(k, cfg[1][k])
+			_set_mode("off" if cfg[0] == "godot" else "world")
+			for motion in ["still", "moving"]:
+				cam.position = views[view][0]
+				cam.look_at(views[view][1])
+				var step := Vector3.ZERO if motion == "still" else cam.global_transform.basis.x * 0.01
+				for i in 90:
+					cam.position += step
+					await _frames(1)
+				for i in 16:
+					cam.position += step
+					await _frames(1)
+					await _shot("flk_%s_%s_%s_%02d.png" % [view, cfg[0], motion, i])
+	for k in base:
+		effect_world.set(k, base[k])
+	report.append("flicker: %d views x %d configs x still/moving x 16 frames" % [views.size(), configs.size()])
+
+
 ## The same popping test for the shop: the dolly (cartons + cooler + a lamp) moves 2 cm per frame along the aisle; floor points
 ## 0.9 to 1.5 m to its side (never under it) are read every frame in the indirect-only view.
 func _pop_test_shop(report: PackedStringArray, label: String) -> void:
@@ -471,7 +513,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker")
 	if not harness:
 		_start_interactive()
 		return
@@ -479,6 +521,8 @@ func _run() -> void:
 		await _ui_test(report)
 	if user_args.has("--artifacts"):
 		await _artifacts(report)
+	if user_args.has("--flicker"):
+		await _flicker(report)
 	if user_args.has("--pop"):
 		for cfg in [["temporal ON ", true], ["temporal OFF", false]]:
 			effect_world.temporal = cfg[1]

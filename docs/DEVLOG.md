@@ -683,3 +683,29 @@ edge every frame).
   line sits; the line took the motion and the camera did not turn. Camera look (right button, look mode, the quote key) is now
   handled in `_input`, before any control; `--uitest` checks both ways of looking with the line in the middle.
 - **No flickering light.** The ceiling light that dipped now and then is gone (and its switch); all six fluorescents are steady.
+
+
+---
+
+# Step 9: High by default, and shimmer with a still camera
+
+- **High is the default** (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per pixel tile, weight of the new frame 0.2);
+  `--quality=default` starts at the older settings. At 1920x1080 (RX 9070 XT, nothing moving): Godot alone 1.85 ms (541 FPS),
+  with the effect at High 7.02 ms (142 FPS); at the older settings 6.33 ms (158 FPS). The extra cost of High is mostly the
+  cascades (0.55 -> 1.62 ms) and the final pass (1.95 -> 2.96 ms: wider tiles).
+- **Shimmer.** `--flicker` saves 16 consecutive frames with nothing moving, camera still and panning 1 cm per frame, and
+  `tools/flicker_report.py` measures how much each pixel changes from frame to frame (the bounce light alone when the camera moves).
+  Switching parts off one by one showed that neither the jitter nor the far cascades mattered; two things did:
+  1. *The adaptive temporal blend* ("follow changes faster") took the normal noise of the per-pixel directions for real change.
+     Now only the part of the difference above a noise floor (0.45, relative) counts, and only if it is not tiny in absolute terms.
+  2. *The edge fallback* switched between the small and the wide window as the tile shifted, so edges flickered. The two results
+     are now blended by how much of the small window survived, and edge pixels lean on the history.
+
+| Pixels changing by more than 3 levels (of 255) | camera still | camera moving |
+|---|---|---|
+| Entrance view, before | 2.8 % | 4.1 % |
+| Entrance view, after | 0.4 % | 2.0 % |
+| Close view of the box, before | 0.5 % | 1.7 % |
+| Close view of the box, after | 0.1 % | 1.4 % |
+
+  The blend costs a little: final pass 1.63 -> 1.95 ms at the older settings (more edge pixels gather the wide window).

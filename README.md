@@ -108,6 +108,7 @@ Run with a flag after `--` and the lab writes images and numbers to `out/` (git-
 | `--bench` | GPU time with the effect off and on, and per pass |
 | `--pop` | frame-to-frame jumps at fixed floor points while the dolly moves past (flicker) |
 | `--artifacts` | close views with and without the image-quality fixes, camera still and moving |
+| `--flicker` | 16 consecutive frames per configuration, camera still and moving; `py tools/flicker_report.py` measures the shimmer |
 | `--uitest` | drives the control panel (views, object picker, split view, presets, reset) and checks the values come back |
 
 Switches for A/B measurements: `--cpu-voxelize` (pack the triangles on the CPU, as before), `--inject-full` (light the whole
@@ -145,6 +146,9 @@ What the three optimizations saved (same machine, 1920x1080, shop, `--bench`; ol
 The image-quality fixes cost time in the final pass (same machine, nothing moving): 0.72 ms without them, 1.63 ms with all three
 (clean edges about 0.5 ms, the filter about 0.4 ms, jitter nothing measurable); whole frame 2.69 ms (372 FPS) -> 3.62 ms (277 FPS).
 
+The lab starts at the **High** preset (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per pixel): 7.02 ms per frame
+(142 FPS) against 1.85 ms (541 FPS) for Godot alone, at 1920x1080; `--quality=default` starts at the cheaper settings (6.33 ms).
+
 These numbers come from a fast desktop GPU with other programs running; treat them as orders of magnitude.
 
 ## Limits
@@ -167,6 +171,7 @@ src/rc/rc_effect.gd        screen-space radiance cascades
 src/rc/rc_world_effect.gd  world-space radiance cascades
 src/rc/shaders/            compute shaders (.comp) and their includes (.inc)
 scripts/                   launchers for Windows and Linux / macOS
+tools/flicker_report.py    measures the shimmer in the frames --flicker writes
 docs/DEVLOG.md             every step in order: what broke, how it was measured and fixed
 docs/images/               the images the devlog refers to
 docs/readme/               the images of this page
