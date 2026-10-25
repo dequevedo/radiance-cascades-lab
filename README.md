@@ -66,7 +66,7 @@ A coloured badge at the top of the screen always says which mode you are in, and
 | Right mouse button (hold) | look around, in cursor mode |
 | W A S D, Q / E | fly; down / up |
 | Shift, mouse wheel | 3x faster; change the fly speed |
-| Left click | select a prop (orange outline, move gizmo); hovering shows a yellow outline |
+| Left click | select a prop (orange screen-space outline, move gizmo); hovering shows a yellow outline |
 | Drag the prop / drag an arrow | move it over the floor / along that axis only |
 | F, Esc | frame the selected prop; deselect |
 | 1 / 2 / 3 / 4 / 5 | Godot only, + world bounce, bounce only, bounce heat map, + screen-space bounce |

@@ -652,6 +652,9 @@ Not tested with a real mouse: the picker and the split line were driven by the t
 - **Controls like an editor.** The lab starts with a free cursor; holding the right mouse button looks around, the mouse wheel
   sets the fly speed, the quote key switches to a game-like look mode. A coloured badge at the top always says the mode, and the
   controls are listed at the bottom right (H hides them).
-- **Props.** Selection draws an outline (the back faces of a slightly larger copy of each part) instead of a tint; the gizmo has
+- **Props.** Selection draws a screen-space outline, pixel exact (the prop alone in a mask, a full-screen pass draws the pixels around it); the gizmo has
   real arrows (a shaft and a cone each, drawn on top). Dragging the prop itself moves it over the floor, dragging an arrow moves it
   along one axis, F frames it.
+- **Stuck input fixed.** A mouse button released over the panel never reached the scene (the panel takes the event), so "looking
+  around" or a drag could stay on. The real button state is now read every frame; a prop only starts to move after the mouse
+  travelled 5 px with the button down, so a click never nudges it.

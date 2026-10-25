@@ -1,7 +1,9 @@
 extends Node3D
 ## Select and move the props of the store with the mouse.
-##   hover            a thin yellow outline
-##   click            select: an orange outline and a move gizmo (three arrows)
+##   hover            a yellow outline (2 px)
+##   click            select: an orange outline (3 px) and a move gizmo (three arrows)
+## The outlines are drawn in screen space, pixel exact (src/outline.gdshader): the hovered and the selected prop are each drawn
+## alone into a mask the size of the window, and a full-screen pass draws the pixels around the mask.
 ##   drag the prop    move it over the floor (horizontal plane)
 ##   drag an arrow    move it along that axis only (red X, green Y, blue Z)
 ##   Esc / click empty space   deselect;  F   frame the selected prop
@@ -16,6 +18,9 @@ const ARROW_LEN := 0.8 # in gizmo units (the gizmo is scaled to a constant size 
 const ARROW_PICK_PX := 14.0 # how close (pixels) the mouse must be to an arrow to grab it
 const REVOXELIZE_EVERY := 0.1 # seconds between re-voxelizations while dragging
 const PLANE_DRAG := 3 # drag mode: the prop over the floor
+const DRAG_START_PX := 5.0 # the mouse must move this far with the button down before a prop starts to move (a click never moves it)
+const SELECT_LAYER := 1 << 19 # visual layers the masks render (the main camera sees every layer)
+const HOVER_LAYER := 1 << 18
 
 var main: Node3D
 var selectables: Array = []
@@ -26,34 +31,77 @@ var dragging := false
 var revoxelize_count := 0
 var last_collect_ms := 0.0 # CPU time to gather the meshes for the last re-voxelization
 
-var _hover_mat: StandardMaterial3D
-var _select_mat: StandardMaterial3D
+var _masks: Array[SubViewport] = [] # [selected, hovered]
+var _mask_cams: Array[Camera3D] = []
+var _outline_mat: ShaderMaterial
 var _gizmo: Node3D
 var _arrow_mats: Array[StandardMaterial3D] = []
 var _drag_axis := -1
+var _pending_axis := -1 # pressed, not yet moved far enough to drag
+var _press_pos := Vector2.ZERO
 var _drag_plane_y := 0.0
 var _drag_last_hit := Vector3.ZERO
 var _dirty := false
 var _since_revoxelize := 0.0
 var _originals := {} # node -> {"xf": Transform3D, "colors": Array[Color]}
-var _outlines := {} # node -> Array[MeshInstance3D]
 
 
 func setup(m: Node3D, nodes: Array) -> void:
 	main = m
 	selectables = nodes
-	_hover_mat = _outline_mat(HOVER_COLOR)
-	_select_mat = _outline_mat(SELECT_COLOR)
 	_build_gizmo()
+	_build_outline()
 
 
-## Outline = the back faces of a slightly bigger copy of each part, flat colour (the classic inverted hull).
-func _outline_mat(c: Color) -> StandardMaterial3D:
-	var m := StandardMaterial3D.new()
-	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	m.cull_mode = BaseMaterial3D.CULL_FRONT
-	m.albedo_color = c
-	return m
+## Two mask views (the selected and the hovered prop, each alone, flat, on a transparent background) and the full-screen pass.
+func _build_outline() -> void:
+	for layer in [SELECT_LAYER, HOVER_LAYER]:
+		var vp := SubViewport.new()
+		vp.transparent_bg = true
+		vp.debug_draw = Viewport.DEBUG_DRAW_UNSHADED
+		vp.render_target_update_mode = SubViewport.UPDATE_DISABLED
+		vp.positional_shadow_atlas_size = 0
+		add_child(vp)
+		var cam := Camera3D.new()
+		cam.cull_mask = layer
+		var env := Environment.new()
+		env.background_mode = Environment.BG_CLEAR_COLOR
+		cam.environment = env
+		vp.add_child(cam)
+		_masks.append(vp)
+		_mask_cams.append(cam)
+	var layer_node := CanvasLayer.new()
+	layer_node.layer = 5 # over the scene, under the control panel
+	add_child(layer_node)
+	var rect := ColorRect.new()
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_outline_mat = ShaderMaterial.new()
+	_outline_mat.shader = load("res://src/outline.gdshader")
+	_outline_mat.set_shader_parameter("sel_mask", _masks[0].get_texture())
+	_outline_mat.set_shader_parameter("hov_mask", _masks[1].get_texture())
+	_outline_mat.set_shader_parameter("sel_color", SELECT_COLOR)
+	_outline_mat.set_shader_parameter("hov_color", HOVER_COLOR)
+	rect.material = _outline_mat
+	layer_node.add_child(rect)
+
+
+## Keeps the mask cameras on the main camera, the masks at the window's size, and renders a mask only while it has a prop in it.
+func _update_outline() -> void:
+	var size := Vector2i(get_viewport().get_visible_rect().size)
+	var has := [selected != null, hovered != null and hovered != selected]
+	for i in 2:
+		var vp := _masks[i]
+		if vp.size != size:
+			vp.size = size
+		var cam := _mask_cams[i]
+		cam.global_transform = main.cam.global_transform
+		cam.fov = main.cam.fov
+		cam.near = main.cam.near
+		cam.far = main.cam.far
+		vp.render_target_update_mode = SubViewport.UPDATE_ALWAYS if has[i] else SubViewport.UPDATE_DISABLED
+	_outline_mat.set_shader_parameter("sel_on", has[0])
+	_outline_mat.set_shader_parameter("hov_on", has[1])
 
 
 func _flat(c: Color, on_top := true) -> StandardMaterial3D:
@@ -110,6 +158,10 @@ func _build_gizmo() -> void:
 
 
 func _process(delta: float) -> void:
+	_update_outline()
+	# The left button released over the panel never reaches us: end a drag from the real button state.
+	if (_drag_axis >= 0 or _pending_axis >= 0) and not Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT):
+		_end_drag()
 	if selected != null:
 		_gizmo.global_position = _bounds(selected).get_center()
 		# The same size on screen at any distance.
@@ -126,6 +178,14 @@ func _process(delta: float) -> void:
 func handle_input(event: InputEvent) -> bool:
 	if event is InputEventMouseMotion:
 		var mm := event as InputEventMouseMotion
+		if _pending_axis >= 0:
+			if mm.position.distance_to(_press_pos) < DRAG_START_PX:
+				return true
+			_drag_axis = _pending_axis
+			_pending_axis = -1
+			dragging = true
+			if _drag_axis == PLANE_DRAG:
+				_drag_last_hit = _plane_hit(_press_pos, _drag_plane_y)
 		if _drag_axis == PLANE_DRAG:
 			_drag_on_plane(mm.position)
 			return true
@@ -137,23 +197,18 @@ func handle_input(event: InputEvent) -> bool:
 	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_LEFT:
 		var mb := event as InputEventMouseButton
 		if mb.pressed:
+			_press_pos = mb.position
 			if selected != null and hovered_axis >= 0:
-				_drag_axis = hovered_axis
-				dragging = true
+				_pending_axis = hovered_axis
 				return true
 			var hit := pick(mb.position)
 			select(hit)
 			if hit != null: # click and drag a prop: it moves over the floor
-				_drag_axis = PLANE_DRAG
+				_pending_axis = PLANE_DRAG
 				_drag_plane_y = hit.global_position.y
-				_drag_last_hit = _plane_hit(mb.position, _drag_plane_y)
-				dragging = true
 			return true
-		if _drag_axis >= 0:
-			_drag_axis = -1
-			dragging = false
-			if _dirty:
-				revoxelize()
+		if _drag_axis >= 0 or _pending_axis >= 0:
+			_end_drag()
 			return true
 	if event is InputEventKey and event.pressed and not event.echo:
 		match (event as InputEventKey).physical_keycode:
@@ -168,6 +223,20 @@ func handle_input(event: InputEvent) -> bool:
 	return false
 
 
+func _end_drag() -> void:
+	_drag_axis = -1
+	_pending_axis = -1
+	dragging = false
+	if _dirty:
+		revoxelize()
+
+
+## No hover while the mouse is over the panel or is turning the camera.
+func clear_hover() -> void:
+	hovered_axis = -1
+	set_hovered(null)
+
+
 ## Updates the hover highlight (prop or gizmo arrow) for the mouse at screen position p.
 func hover_at(p: Vector2) -> void:
 	hovered_axis = _arrow_at(p) if selected != null else -1
@@ -178,22 +247,22 @@ func set_hovered(n: Node3D) -> void:
 	if n == hovered:
 		return
 	if hovered != null and hovered != selected:
-		_set_outline(hovered, null)
+		_set_outline(hovered, 0)
 	hovered = n
 	if hovered != null and hovered != selected:
-		_set_outline(hovered, _hover_mat, 0.015)
+		_set_outline(hovered, HOVER_LAYER)
 
 
 func select(n: Node3D) -> void:
 	if selected != null:
-		_set_outline(selected, null)
+		_set_outline(selected, 0)
 	selected = n
 	if selected != null:
-		_set_outline(selected, _select_mat, 0.03)
+		_set_outline(selected, SELECT_LAYER)
 		if not _originals.has(selected):
 			_originals[selected] = {"xf": selected.transform, "colors": _colors(selected)}
 	if hovered != null and hovered != selected:
-		_set_outline(hovered, _hover_mat, 0.015)
+		_set_outline(hovered, HOVER_LAYER)
 	_gizmo.visible = selected != null
 	hovered_axis = -1
 
@@ -335,30 +404,10 @@ func _colors(n: Node3D) -> Array[Color]:
 	return out
 
 
-## Puts (mat != null) or removes an outline of thickness t (metres) around every part of a prop.
-func _set_outline(n: Node3D, mat: Material, t := 0.0) -> void:
-	for o in _outlines.get(n, []):
-		if is_instance_valid(o):
-			o.queue_free()
-	_outlines.erase(n)
-	if mat == null:
-		return
-	var list: Array[MeshInstance3D] = []
+## Puts the parts of a prop on one outline mask layer (0 = on none).
+func _set_outline(n: Node3D, layer: int) -> void:
 	for mi in _parts(n):
-		var hull := MeshInstance3D.new()
-		if mi.mesh is BoxMesh:
-			var bm := BoxMesh.new()
-			bm.size = (mi.mesh as BoxMesh).size + Vector3.ONE * t * 2.0
-			hull.mesh = bm
-		else:
-			hull.mesh = mi.mesh
-			hull.scale = Vector3.ONE * (1.0 + t * 4.0)
-		hull.material_override = mat
-		hull.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		hull.set_meta("rc_skip", true)
-		mi.add_child(hull)
-		list.append(hull)
-	_outlines[n] = list
+		mi.layers = 1 | layer
 
 
 ## World bounding box of a prop (all its parts).

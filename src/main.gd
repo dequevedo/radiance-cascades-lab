@@ -608,6 +608,13 @@ func _apply_mouse_mode() -> void:
 
 
 func _interactive_process(delta: float) -> void:
+	# A button released over the panel never reaches _unhandled_input (the panel takes it): read the real state every frame,
+	# so looking around never stays stuck on.
+	if _rmb_held and not Input.is_mouse_button_pressed(MOUSE_BUTTON_RIGHT):
+		_rmb_held = false
+		_apply_mouse_mode()
+	if picker != null and not picker.dragging and (not mouse_is_free() or get_viewport().gui_get_hovered_control() != null):
+		picker.clear_hover()
 	# Fly with WASD (Q / E down and up) in both modes; Shift = 3x faster. The keys do nothing while a text field has focus.
 	var dir := Vector3.ZERO
 	if Input.is_physical_key_pressed(KEY_W): dir.z -= 1.0
