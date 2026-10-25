@@ -135,3 +135,7 @@ whole range costs about the same per cascade.
 
 `docs/DEVLOG.md` tells how this prototype got from a first noisy version to the current one, with the measurements behind
 every change.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
