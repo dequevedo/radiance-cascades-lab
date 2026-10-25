@@ -132,11 +132,9 @@ right (H hides it).
 | 1 / 2 / 3 / 4 / 5 | Godot only, + world bounce, bounce only, bounce heat map, + screen-space bounce |
 | Space | pause the moving dolly |
 
-The **Go to** buttons in the View tab jump to every room (Entrance, Aisle, Corridor, Neon, Materials, Glass, TV Room...).
-
 ![The control panel and the object picker](docs/readme/control_panel.jpg)
 
-The panel is split in tabs: **View** (view modes, split view, places to jump to), **GI** (every live setting of the effect,
+The panel is split in tabs: **View** (view modes, split view), **GI** (every live setting of the effect,
 image quality and performance switches), **Quality** (presets, volume sizes, anti-aliasing), **Scene** (lamps, the television,
 glossy reflections, Godot's screen-space reflections), **Object** (the selected prop) and **Stats** (GPU time of every pass),
 plus **Reset all**. **Split view** shows Godot alone on the left of a line and the effect on the right; drag the line.

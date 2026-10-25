@@ -383,11 +383,6 @@ func _build_view(body: VBoxContainer) -> void:
 		"Left of the line: Godot alone. Right: with the bounce light. Drag the line with the mouse.")
 	_slider(body, "Bounce-only gain", 1.0, 40.0, 0.5, main.view_gain, func(v): main.view_gain = v; main.refresh_mode(),
 		"Brightness boost of the 'Bounce only' view, to see weak light far from a lamp.", "x%.1f")
-	_heading(body, "Go to")
-	var tp := _grid(body, 3)
-	for pose_name in main.poses.keys():
-		var pn: String = pose_name
-		_button(tp, pn.replace("_", " ").capitalize(), func(): main.teleport(pn))
 
 
 func _build_gi(body: VBoxContainer) -> void:
