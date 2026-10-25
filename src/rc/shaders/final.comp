@@ -16,6 +16,7 @@ layout(set = 0, binding = 18, rgba16f) uniform restrict writeonly image2D hist_c
 
 layout(push_constant, std430) uniform Final {
 	vec4 a; // a_0, directions per axis of the per-pixel tile, tile shift x, tile shift y
+	vec4 b; // x: pass (0 = gather + temporal [+ composite when the filter is off], 1 = filter + composite)
 } pc;
 
 //#include screen.inc
@@ -40,6 +41,81 @@ vec3 heat(float v) {
 	return mix(c4, c5, t - 4.0);
 }
 
+// Adds up the per-pixel rays of the pixels in a square of half size h around p, weighted by depth, normal and cosine.
+// ws_all is the weight the same window would have if no neighbour were rejected (to tell how much of it survived).
+void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, inout vec3 acc, inout float ws, inout float ws_all) {
+	ivec2 sz = ivec2(P.screen.xy);
+	for (int oy = -h; oy < max(na - h, h + 1); oy++) {
+		for (int ox = -h; ox < max(na - h, h + 1); ox++) {
+			ivec2 q = clamp(p + ivec2(ox, oy), ivec2(0), sz - 1);
+			vec3 v = oct_vec(ivec2((q.x + shift.x) % na, (q.y + shift.y) % na), na);
+			float wa = pow(dot(v, v), -1.5);
+			ws_all += wa;
+			vec4 nq = imageLoad(nrm_img, q);
+			if (nq.w <= 0.0) {
+				continue;
+			}
+			float dz = (nq.w - dp) / (0.04 * dp + 0.02);
+			float w = exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 8.0);
+			if (w < 1e-4) {
+				continue;
+			}
+			float cosv = max(dot(normalize(v), n), 0.0);
+			acc += imageLoad(near_img, q).rgb * (w * wa * cosv);
+			ws += w * wa;
+		}
+	}
+}
+
+// Filter (C): an edge-aware average of the bounce light over a 7 x 7 window (the same depth and normal test as the gather, times
+// a Gaussian). It removes the 6 x 6 pattern the per-pixel directions leave, without blurring across the edges of objects.
+// In pass 1 `hist_prev` is bound to this frame's result.
+vec3 filtered(ivec2 p, vec3 n, float dp) {
+	ivec2 sz = ivec2(P.screen.xy);
+	vec3 acc = vec3(0.0);
+	float ws = 0.0;
+	for (int oy = -3; oy <= 3; oy++) {
+		for (int ox = -3; ox <= 3; ox++) {
+			ivec2 q = clamp(p + ivec2(ox, oy), ivec2(0), sz - 1);
+			vec4 nq = imageLoad(nrm_img, q);
+			if (nq.w <= 0.0) {
+				continue;
+			}
+			float dz = (nq.w - dp) / (0.03 * dp + 0.015);
+			float w = exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 16.0) * exp(-float(ox * ox + oy * oy) / 8.0);
+			acc += w * imageLoad(hist_prev, q).rgb;
+			ws += w;
+		}
+	}
+	return ws > 0.0 ? acc / ws : imageLoad(hist_prev, p).rgb;
+}
+
+void composite(ivec2 p, vec3 gi_t) {
+	vec4 col = imageLoad(color_img, p);
+	vec3 albedo;
+	if (P.misc.w > 0.5) {
+		albedo = srgb_to_linear(texelFetch(albedo_tex, p, 0).rgb);
+	} else {
+		float luma = dot(col.rgb, vec3(0.2126, 0.7152, 0.0722));
+		albedo = luma > 1e-4 ? clamp(col.rgb / luma * P.tune.y, 0.0, 1.0) : vec3(P.tune.y);
+	}
+	vec3 indirect = gi_t * albedo * P.tune.x;
+	if (P.tune.w > 3.5) {
+		col.rgb = heat(dot(gi_t, vec3(0.2126, 0.7152, 0.0722)) * P.tune.x);
+	} else if (P.tune.w > 1.5) {
+		col.rgb = albedo;
+	} else if (P.tune.w > 0.5) {
+		col.rgb = indirect;
+	} else {
+		col.rgb += indirect;
+	}
+	// Split view: left of the line, the image as Godot drew it (no bounce light).
+	if (P.screen.z > 0.0 && float(p.x) < P.screen.z * P.screen.x) {
+		col = imageLoad(color_img, p);
+	}
+	imageStore(color_img, p, col);
+}
+
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
 	ivec2 sz = ivec2(P.screen.xy);
@@ -52,29 +128,25 @@ void main() {
 	}
 	vec3 n = np.xyz;
 	float dp = np.w;
+	bool filter_on = (int(P.screen.w + 0.5) & 4) != 0;
+	if (pc.b.x > 0.5) {
+		composite(p, filtered(p, n, dp));
+		return;
+	}
 	int na = int(pc.a.y + 0.5);
 	ivec2 shift = ivec2(int(pc.a.z + 0.5), int(pc.a.w + 0.5));
-	int h = na / 2;
 	vec3 acc = vec3(0.0);
 	float ws = 0.0;
-	for (int oy = -h; oy < na - h; oy++) {
-		for (int ox = -h; ox < na - h; ox++) {
-			ivec2 q = clamp(p + ivec2(ox, oy), ivec2(0), sz - 1);
-			vec4 nq = imageLoad(nrm_img, q);
-			if (nq.w <= 0.0) {
-				continue;
-			}
-			float dz = (nq.w - dp) / (0.04 * dp + 0.02);
-			float w = exp(-dz * dz) * pow(max(dot(n, nq.xyz), 0.0), 8.0);
-			if (w < 1e-4) {
-				continue;
-			}
-			vec3 v = oct_vec(ivec2((q.x + shift.x) % na, (q.y + shift.y) % na), na);
-			float wa = pow(dot(v, v), -1.5);
-			float cosv = max(dot(normalize(v), n), 0.0);
-			acc += imageLoad(near_img, q).rgb * (w * wa * cosv);
-			ws += w * wa;
-		}
+	float ws_all = 0.0;
+	gather_window(p, n, dp, na, shift, na / 2, acc, ws, ws_all);
+	// Edge fallback (B): at the edge of an object, the neighbours across the edge are rejected and the pixel is left with part of
+	// the tile's directions: a biased value that repeats every tile (a dashed line along the silhouette). When less than 3/4 of the
+	// directions survived, gather again over a window two tiles wide, so every direction is found on this side of the edge.
+	if ((int(P.screen.w + 0.5) & 2) != 0 && ws < 0.75 * ws_all) {
+		acc = vec3(0.0);
+		ws = 0.0;
+		ws_all = 0.0;
+		gather_window(p, n, dp, na, shift, na, acc, ws, ws_all);
 	}
 	vec3 gi = ws > 0.0 ? 4.0 * acc / ws : vec3(0.0);
 
@@ -117,28 +189,7 @@ void main() {
 		}
 	}
 	imageStore(hist_cur, p, vec4(gi_t, 1.0));
-
-	vec4 col = imageLoad(color_img, p);
-	vec3 albedo;
-	if (P.misc.w > 0.5) {
-		albedo = srgb_to_linear(texelFetch(albedo_tex, p, 0).rgb);
-	} else {
-		float luma = dot(col.rgb, vec3(0.2126, 0.7152, 0.0722));
-		albedo = luma > 1e-4 ? clamp(col.rgb / luma * P.tune.y, 0.0, 1.0) : vec3(P.tune.y);
+	if (!filter_on) {
+		composite(p, gi_t);
 	}
-	vec3 indirect = gi_t * albedo * P.tune.x;
-	if (P.tune.w > 3.5) {
-		col.rgb = heat(dot(gi_t, vec3(0.2126, 0.7152, 0.0722)) * P.tune.x);
-	} else if (P.tune.w > 1.5) {
-		col.rgb = albedo;
-	} else if (P.tune.w > 0.5) {
-		col.rgb = indirect;
-	} else {
-		col.rgb += indirect;
-	}
-	// Split view: left of the line, the image as Godot drew it (no bounce light).
-	if (P.screen.z > 0.0 && float(p.x) < P.screen.z * P.screen.x) {
-		col = imageLoad(color_img, p);
-	}
-	imageStore(color_img, p, col);
 }

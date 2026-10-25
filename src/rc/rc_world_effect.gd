@@ -29,6 +29,9 @@ const A0 := 4 # directions per axis in cascade 0 (a_n = A0 << n); probe spacing 
 @export var inject_partial := true # re-light only the part of the volume that a changed light or a moving object can affect
 @export var far_every := 2 # the far cascades (far_from and up) are traced every Nth frame; 1 = every frame
 @export var far_from := 2
+@export var jitter := true # A: random ray start and probe lookup per pixel and frame (turns grid lines into noise the temporal blend removes)
+@export var edge_fix := true # B: at object edges, gather from a window two tiles wide when most of the tile was rejected
+@export var denoise := true # C: edge-aware 7x7 filter of the bounce light before it is added
 @export var split := -1.0 # split view: fraction of the screen width, left of it shows no bounce light; < 0 = off
 
 const MAX_DYN_BOXES := 64
@@ -446,7 +449,7 @@ func _write_ubo(proj: Projection, cam_to_world: Projection, size: Vector2i, use_
 	_pack_mat(proj, p)
 	_pack_mat(proj.inverse(), p)
 	_pack_mat(cam_to_world, p)
-	p.append_array([size.x, size.y, split, 0.0])
+	p.append_array([size.x, size.y, split, float((1 if jitter else 0) | (2 if edge_fix else 0) | (4 if denoise else 0))])
 	p.append_array([volume_min.x, volume_min.y, volume_min.z, voxel_size])
 	p.append_array([dims.x, dims.y, dims.z, _light_count])
 	p.append_array([intensity, albedo_luma, max_radiance, float(debug_mode)])
@@ -689,9 +692,21 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		var final_set := UniformSetCacheRD.get_cache(_shader["final"], 0,
 			[_ubo_u(), color_u, albedo_u, depth_u, _img(12, _near_tex), _img(13, _nrm[cur]), _img(16, _nrm[1 - cur]),
 			 _img(17, _hist[1 - cur]), _img(18, _hist[cur])])
+		var fpc := npc.duplicate()
+		fpc.append_array([0.0, 0.0, 0.0, 0.0])
 		rd.compute_list_bind_uniform_set(cl, final_set, 0)
-		rd.compute_list_set_push_constant(cl, npc.to_byte_array(), 16)
+		rd.compute_list_set_push_constant(cl, fpc.to_byte_array(), 32)
 		rd.compute_list_dispatch(cl, ceili(size.x / 8.0), ceili(size.y / 8.0), 1)
+		if denoise:
+			# Pass 1: filter this frame's result (bound as hist_prev) and add it to the image.
+			rd.compute_list_add_barrier(cl)
+			var filt_set := UniformSetCacheRD.get_cache(_shader["final"], 0,
+				[_ubo_u(), color_u, albedo_u, depth_u, _img(12, _near_tex), _img(13, _nrm[cur]), _img(16, _nrm[1 - cur]),
+				 _img(17, _hist[cur]), _img(18, _hist[1 - cur])])
+			fpc[4] = 1.0
+			rd.compute_list_bind_uniform_set(cl, filt_set, 0)
+			rd.compute_list_set_push_constant(cl, fpc.to_byte_array(), 32)
+			rd.compute_list_dispatch(cl, ceili(size.x / 8.0), ceili(size.y / 8.0), 1)
 		rd.compute_list_end()
 		rd.capture_timestamp("RC final gather")
 		_prev_vp = view_proj * cam_xf.inverse()

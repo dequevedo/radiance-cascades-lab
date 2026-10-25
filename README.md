@@ -34,6 +34,18 @@ Three things keep the per-frame cost down:
   When nothing moves, that pass costs nothing.
 - **The far cascades are traced every other frame** and reused in between: far light changes slowly.
 
+Three more keep the image clean (each can be switched off in the GI tab):
+
+- **Jittered rays**: each pixel starts its rays at a random point every frame, so the straight lines of the voxel and probe
+  grids turn into noise that the temporal blend averages away; occupancy fades in over the first 1.5 voxels of a ray, so a
+  surface that is not aligned with the grid does not shadow itself with its own voxel staircase.
+- **Clean object edges**: where an object's edge rejects most of a pixel's neighbours, the rays are gathered from a window
+  twice as wide, so no dashed line runs along silhouettes.
+- **Edge-aware filter**: the bounce light is averaged over 7 x 7 pixels of the same surface, which removes the fine grid the
+  per-pixel directions leave.
+
+![Before and after the three image-quality fixes](docs/readme/artifacts_before_after.jpg)
+
 ## The scene
 
 One scene holds everything: a 14 x 9.5 m store with ~230 box props, six fluorescents (one flickers), a sodium street lamp
@@ -95,10 +107,11 @@ Run with a flag after `--` and the lab writes images and numbers to `out/` (git-
 | `--shots` | fixed camera poses, each with the effect off, on, indirect only and as a heat map |
 | `--bench` | GPU time with the effect off and on, and per pass |
 | `--pop` | frame-to-frame jumps at fixed floor points while the dolly moves past (flicker) |
+| `--artifacts` | close views with and without the image-quality fixes, camera still and moving |
 | `--uitest` | drives the control panel (views, object picker, split view, presets, reset) and checks the values come back |
 
 Switches for A/B measurements: `--cpu-voxelize` (pack the triangles on the CPU, as before), `--inject-full` (light the whole
-volume every frame), `--far-every=1` (trace every cascade every frame), `--still` (nothing moves, no light changes) and
+volume every frame), `--far-every=1` (trace every cascade every frame), `--no-jitter`, `--no-edge-fix`, `--no-denoise` (the image-quality fixes), `--still` (nothing moves, no light changes) and
 `--dense` (about 400,000 extra triangles).
 
 ## Results on one machine
@@ -128,6 +141,9 @@ What the three optimizations saved (same machine, 1920x1080, shop, `--bench`; ol
 | Dolly rolling: cascades | 0.738 ms | 0.673 ms |
 | 431,000 triangles: gathering the scene at start-up | 234 ms | 103 ms |
 | Gathering it again while a prop is dragged | | 1.7 ms |
+
+The image-quality fixes cost time in the final pass (same machine, nothing moving): 0.72 ms without them, 1.63 ms with all three
+(clean edges about 0.5 ms, the filter about 0.4 ms, jitter nothing measurable); whole frame 2.69 ms (372 FPS) -> 3.62 ms (277 FPS).
 
 These numbers come from a fast desktop GPU with other programs running; treat them as orders of magnitude.
 

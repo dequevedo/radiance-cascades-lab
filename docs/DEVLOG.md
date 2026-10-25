@@ -658,3 +658,24 @@ Not tested with a real mouse: the picker and the split line were driven by the t
 - **Stuck input fixed.** A mouse button released over the panel never reached the scene (the panel takes the event), so "looking
   around" or a drag could stay on. The real button state is now read every frame; a prop only starts to move after the mouse
   travelled 5 px with the button down, so a click never nudges it.
+
+
+---
+
+# Step 8: jagged edges and a blocky bounce
+
+Two complaints from a close view of a turned box next to the counter: a dashed line along its silhouette, and bounce light that
+looked square, in vertical and horizontal lines. `--artifacts` renders the same close views with each fix on and off, camera
+still and moving.
+
+| What was seen | Cause | Fix |
+|---|---|---|
+| Dashed line along silhouettes | A pixel gathers the rays of the 6 x 6 pixels around it, one direction each. At an edge, the neighbours across it are rejected (other depth), so the pixel keeps part of the directions: a biased value that repeats every 6 px. The temporal blend cannot help there: the history is rejected at edges too. | **Clean edges**: when less than 3/4 of the window survived, gather again over a window two tiles wide. |
+| A fine grid over every surface | The same 6 x 6 pattern of directions; the adaptive temporal blend took it for real change and kept accepting new frames. | **Edge-aware filter**: a 7 x 7 average of the bounce light over pixels of the same surface (depth and normal test, Gaussian). |
+| A band of dark steps along the bottom of the turned box | The voxel copy of a surface that is not aligned with the grid is a staircase sticking out of it by up to a voxel; rays started inside it and shadowed their own surface. Fixed sampling also drew the voxel and probe grids into the light. | **Jitter**: random start of the samples along the ray and a random sideways offset of the probe lookup, new every frame; occupancy fades in over the first 1.5 voxels of the ray. |
+
+Cost (RX 9070 XT, 1920x1080, nothing moving): final pass 0.72 -> 1.63 ms (edges ~0.5 ms, filter ~0.4 ms); whole frame 2.69 ms
+(372 FPS) -> 3.62 ms (277 FPS). A cheaper edge test (re-gather below 1/2 instead of 3/4) saved 0.25 ms but let a few dashes back.
+
+Not fixed: with the camera moving, a light dashed line remains where the box meets the floor (the history is rejected along that
+edge every frame).

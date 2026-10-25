@@ -411,6 +411,13 @@ func _build_gi(body: VBoxContainer) -> void:
 		"A surface counts as at most this bright when it lights others (stops fireflies from the lamps).", "%.0f")
 	_slider(body, "Probe lookup offset (m)", 0.05, 0.8, 0.05, effect.gather_bias, func(v): effect.gather_bias = v,
 		"How far from the surface the probes are read. Larger = fewer leaks near walls, softer corners.")
+	_heading(body, "Image quality")
+	_check(body, "Jittered rays", effect.jitter, func(v): effect.jitter = v,
+		"Each pixel starts its rays at a random point every frame: the straight lines of the voxel and probe grids turn into noise that the temporal blend removes.")
+	_check(body, "Clean object edges", effect.edge_fix, func(v): effect.edge_fix = v,
+		"At an object's edge, gather the rays from a window twice as wide, so no dashed line appears along the silhouette. About 0.5 ms at 1080p.")
+	_check(body, "Edge-aware filter", effect.denoise, func(v): effect.denoise = v,
+		"Smooths the bounce light over 7 x 7 pixels of the same surface (removes the fine grid of the per-pixel directions). About 0.4 ms at 1080p.")
 	_heading(body, "Performance")
 	_check(body, "Re-light only what changed", effect.inject_partial, func(v): effect.inject_partial = v,
 		"Direct light is injected again only around lights that changed and around moving objects. Off = the whole volume, every frame.")

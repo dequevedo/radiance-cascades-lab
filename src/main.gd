@@ -318,6 +318,37 @@ func _ui_test(report: PackedStringArray) -> void:
 	report.append("reset restores the defaults: " + str(after == defaults or true))
 
 
+## Before / after of the jitter (A) and the edge fallback (B): the same close views with each combination, camera still (settled)
+## and camera moving (2 cm per frame, the shot taken while it moves), with the effect and with the bounce light alone.
+func _artifacts(report: PackedStringArray) -> void:
+	anim_auto = false
+	shop.flicker_on = false
+	var views := {
+		"cooler": [Vector3(4.55, 1.45, -3.15), Vector3(5.3, 0.25, -2.2)],
+		"shelves": [Vector3(-0.6, 1.3, 0.2), Vector3(-2.5, 0.7, -1.4)],
+	}
+	var configs := [["before", false, false, false], ["A+B", true, true, false], ["A+B+C", true, true, true], ["A+C", true, false, true]]
+	for view in views:
+		for cfg in configs:
+			effect_world.jitter = cfg[1]
+			effect_world.edge_fix = cfg[2]
+			effect_world.denoise = cfg[3]
+			for mode in ["world", "world_gi"]:
+				_set_mode(mode)
+				cam.position = views[view][0]
+				cam.look_at(views[view][1])
+				await _frames(90)
+				await _shot("art_%s_%s_%s_still.png" % [view, cfg[0], mode])
+				for i in 30:
+					cam.position += cam.global_transform.basis.x * 0.02
+					await _frames(1)
+				await _shot("art_%s_%s_%s_moving.png" % [view, cfg[0], mode])
+	effect_world.jitter = true
+	effect_world.edge_fix = true
+	effect_world.denoise = true
+	report.append("artifacts: %d views x %d configs x 2 modes x still/moving" % [views.size(), configs.size()])
+
+
 ## The same popping test for the shop: the dolly (cartons + cooler + a lamp) moves 2 cm per frame along the aisle; floor points
 ## 0.9 to 1.5 m to its side (never under it) are read every frame in the indirect-only view.
 func _pop_test_shop(report: PackedStringArray, label: String) -> void:
@@ -386,6 +417,9 @@ func _run() -> void:
 	report.append("Viewport %dx%d, GPU %s" % [size.x, size.y, RenderingServer.get_video_adapter_name()])
 	# A/B switches for the measurements: the old CPU triangle packing, injecting the whole volume, far cascades every frame.
 	effect_world.inject_partial = not user_args.has("--inject-full")
+	effect_world.jitter = not user_args.has("--no-jitter")
+	effect_world.edge_fix = not user_args.has("--no-edge-fix")
+	effect_world.denoise = not user_args.has("--no-denoise")
 	for a in user_args:
 		if a.begins_with("--far-every="):
 			effect_world.far_every = int(a.trim_prefix("--far-every="))
@@ -405,12 +439,14 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts")
 	if not harness:
 		_start_interactive()
 		return
 	if user_args.has("--uitest"):
 		await _ui_test(report)
+	if user_args.has("--artifacts"):
+		await _artifacts(report)
 	if user_args.has("--pop"):
 		for cfg in [["temporal ON ", true], ["temporal OFF", false]]:
 			effect_world.temporal = cfg[1]
