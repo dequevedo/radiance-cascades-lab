@@ -37,8 +37,8 @@ var _pending_default := {}
 var _voxel_option: OptionButton
 var _spacing_option: OptionButton
 var _cascade_option: OptionButton
-var _voxel_values := [0.25, 0.1667, 0.125, 0.1, 0.0833]
-var _spacing_values := [1.0, 0.7, 0.5, 0.35, 0.25]
+var _voxel_values := [0.4, 0.25, 0.2, 0.1667, 0.125, 0.1, 0.0833]
+var _spacing_values := [1.0, 0.75, 0.7, 0.5, 0.35, 0.25]
 var _cascade_values := [3, 4, 5]
 # Split view
 var _split_check: CheckButton
@@ -428,10 +428,12 @@ func _build_gi(body: VBoxContainer) -> void:
 
 func _build_quality(body: VBoxContainer) -> void:
 	var row := _grid(body, 3)
-	_button(row, "Low", func(): apply_preset("low"), "Cheaper: 25 cm voxels, probes 1 m apart, 16 directions per pixel tile.")
-	_button(row, "Default", reset_all, "Back to the settings the lab starts with (the High preset).")
-	_button(row, "High", func(): apply_preset("high"), "Finer: 10 cm voxels, probes 0.35 m apart, 64 directions per pixel tile. Costs more.")
+	_button(row, "Low", func(): apply_preset("low"), "Cheaper: " + _preset_text("low") + ".")
+	_button(row, "Default", reset_all, "Back to the settings this scene starts with.")
+	_button(row, "High", func(): apply_preset("high"), "Finer: " + _preset_text("high") + ". Costs more.")
 	_label(body, "These change the size of the volumes: press Apply to voxelize again.", DIM)
+	_volume_label = _label(body, "", DIM, 0, false)
+	_update_volume_label()
 	_voxel_option = _option(body, "Voxel size (m)", _voxel_values, effect.voxel_size, func(v): _pending["voxel"] = v,
 		"Smaller voxels = finer geometry for the light, much more memory and time.")
 	_spacing_option = _option(body, "Probe spacing (m)", _spacing_values, effect.probe_spacing, func(v): _pending["spacing"] = v,
@@ -595,13 +597,32 @@ func reset_all() -> void:
 		apply_quality()
 
 
+var _volume_label: Label
+## A volume above this many voxels is refused: its textures (about 60 bytes per voxel) would not fit in video memory, and a
+## GPU that has to page them drops to a few frames per second.
+const MAX_VOXELS := 24000000
+
+
+func _preset_text(name: String) -> String:
+	var p: Dictionary = main.scene_script.PRESETS[name]
+	return "%d cm voxels, probes %.2f m apart, %d directions per pixel tile" % [roundi(p["voxel"] * 100.0), p["spacing"], p["dirs"] * p["dirs"]]
+
+
+func _volume_dims(voxel: float) -> Vector3i:
+	var size: Vector3 = main.volume_size()
+	return Vector3i(ceili(size.x / voxel), ceili(size.y / voxel), ceili(size.z / voxel))
+
+
+func _update_volume_label(note := "") -> void:
+	if _volume_label == null:
+		return
+	var d := _volume_dims(effect.voxel_size)
+	var n := d.x * d.y * d.z
+	_volume_label.text = "Volume now: %d x %d x %d = %.1f million voxels, about %d MB.%s" % [d.x, d.y, d.z, n / 1.0e6, n * 60 / 1000000, note]
+
+
 func apply_preset(name: String) -> void:
-	var p := {}
-	match name:
-		"low":
-			p = {"voxel": 0.25, "spacing": 1.0, "cascades": 4, "dirs": 4, "alpha": 0.35}
-		"high":
-			p = {"voxel": 0.1, "spacing": 0.35, "cascades": 4, "dirs": 8, "alpha": 0.2}
+	var p: Dictionary = main.scene_script.PRESETS[name]
 	_pending = {"voxel": p["voxel"], "spacing": p["spacing"], "cascades": p["cascades"]}
 	_sync_options()
 	(_sliders["Directions per pixel tile"] as HSlider).value = p["dirs"]
@@ -626,6 +647,11 @@ func _differs_from_applied() -> bool:
 
 
 func apply_quality() -> void:
+	var d := _volume_dims(_pending["voxel"])
+	if d.x * d.y * d.z > MAX_VOXELS:
+		_update_volume_label("\nRefused: %d cm voxels would make %.0f million voxels (about %d MB). Pick bigger voxels." % [
+			roundi(_pending["voxel"] * 100.0), d.x * d.y * d.z / 1.0e6, d.x * d.y * d.z * 60 / 1000000])
+		return
 	effect.voxel_size = _pending["voxel"]
 	effect.probe_spacing = _pending["spacing"]
 	effect.cascades = int(_pending["cascades"])
@@ -633,6 +659,7 @@ func apply_quality() -> void:
 	effect.dims = Vector3i(ceili(size.x / effect.voxel_size), ceili(size.y / effect.voxel_size), ceili(size.z / effect.voxel_size))
 	effect.volume_ready = false
 	RenderingServer.call_on_render_thread(effect.rebuild)
+	_update_volume_label()
 
 
 var _shown_selected: Node3D

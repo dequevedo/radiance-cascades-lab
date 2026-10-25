@@ -40,6 +40,11 @@ const DARK_Z1 := MAT_Z1 - WALL
 # The GI volume that holds the store and the corridor (world metres). The plan grid covers the same area.
 const VOLUME_MIN := Vector3(-20.5, -0.5, -5.25)
 const VOLUME_SIZE := Vector3(28.0, 4.5, 19.25)
+## The panel's Low and High buttons, for this scene's volume.
+const PRESETS := {
+	"low": {"voxel": 0.25, "spacing": 1.0, "cascades": 4, "dirs": 4, "alpha": 0.35},
+	"high": {"voxel": 0.1, "spacing": 0.35, "cascades": 4, "dirs": 8, "alpha": 0.2},
+}
 const GRID_NX := 560
 const GRID_NZ := 385
 

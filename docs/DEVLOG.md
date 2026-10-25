@@ -952,3 +952,26 @@ scales the voxel's emission by it. Large glowing panels (shop windows) keep thei
 rooms' neon sign (5 x 12 cm, 10 cm voxels) lost about a third of its bounce light, so its energy went from 4 to 6.
 
 `--city --traffic` photographs a traffic light from above.
+
+
+---
+
+# Step 20: the High button took the city to 5 FPS
+
+The panel's Low and High buttons had the rooms' numbers written into them. High means 10 cm voxels; over the rooms' volume
+(28 x 4.5 x 19 m) that is 2.4 million voxels, about 150 MB. Over the city's (64 x 24 x 64 m) it is 640 x 240 x 640 = 98 million
+voxels, about 6 GB of 3D textures plus the probes: more than the video memory, so the GPU paged and the city ran at 5 FPS.
+
+- Each scene now has its own presets (`PRESETS` in `shop_scene.gd` and `city_scene.gd`); the buttons describe them.
+- The Quality tab shows the volume's size in voxels and megabytes, and refuses a volume above 24 million voxels with a message.
+- The step of the volume that follows the camera is a whole number of the top cascade's probe spacings, whatever the probe
+  spacing (with fixed 8 m steps, probes 0.35 m apart would have moved off their grid at every step).
+
+`--presettest` applies Default, Low and High like a click and times 150 frames each (1920x1080, GPU):
+
+| | Default | Low | High |
+|---|---|---|---|
+| Rooms | 4.64 ms (10 cm) | 2.64 ms (25 cm) | 4.53 ms (10 cm) |
+| City | 6.75 ms (25 cm) | 3.31 ms (40 cm) | 9.51 ms (20 cm) |
+
+A city High with probes 0.75 m apart cost 15.3 ms; it keeps them 1 m apart.

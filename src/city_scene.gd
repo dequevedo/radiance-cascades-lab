@@ -19,6 +19,12 @@ const SHOP_H := 3.8
 const VOLUME_SIZE := Vector3(64.0, 24.0, 64.0)
 const VOLUME_MIN := Vector3(-32.0, -1.0, -32.0)
 const FOLLOW_STEP := 8.0
+## The panel's Low and High buttons, for this scene's volume (four times the rooms' width and five times their height: the
+## rooms' 10 cm voxels here would be 98 million voxels, about 6 GB).
+const PRESETS := {
+	"low": {"voxel": 0.4, "spacing": 1.0, "cascades": 4, "dirs": 4, "alpha": 0.35},
+	"high": {"voxel": 0.2, "spacing": 1.0, "cascades": 4, "dirs": 8, "alpha": 0.25},
+}
 
 const FACADES: Array[Color] = [Color(0.85, 0.55, 0.42), Color(0.92, 0.8, 0.55), Color(0.62, 0.78, 0.68), Color(0.9, 0.66, 0.7),
 	Color(0.62, 0.72, 0.86), Color(0.93, 0.9, 0.82), Color(0.78, 0.5, 0.36), Color(0.7, 0.66, 0.84), Color(0.95, 0.72, 0.45)]

@@ -676,6 +676,7 @@ func rebuild() -> void:
 		return
 	_free_volume()
 	volume_ready = false
+	_follow_target = Vector3.INF
 	_vox_static = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_dyn = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
 	_vox_albedo = _tex3d(dims, RenderingDevice.DATA_FORMAT_R8G8B8A8_UNORM)
@@ -736,11 +737,15 @@ func follow(cam_pos: Vector3) -> void:
 	if follow_step <= 0.0 or not volume_ready:
 		return
 	var size := Vector3(dims) * voxel_size
+	# The step is a whole number of the top cascade's probe spacings (every finer grid divides it), so after a move every probe
+	# grid lies where it lay before; follow_step is only the wish.
+	var quantum := probe_spacing * pow(2.0, cascades - 1)
+	var step := maxf(ceilf(follow_step / quantum - 0.001), 1.0) * quantum
 	var base: Vector3 = _follow_target if _follow_target != Vector3.INF else volume_min
 	var centre := base + size * 0.5
-	if absf(cam_pos.x - centre.x) <= follow_step and absf(cam_pos.z - centre.z) <= follow_step:
+	if absf(cam_pos.x - centre.x) <= step and absf(cam_pos.z - centre.z) <= step:
 		return
-	var want := Vector3(snappedf(cam_pos.x - size.x * 0.5, follow_step), base.y, snappedf(cam_pos.z - size.z * 0.5, follow_step))
+	var want := Vector3(snappedf(cam_pos.x - size.x * 0.5, step), base.y, snappedf(cam_pos.z - size.z * 0.5, step))
 	if want == base:
 		return
 	_follow_target = want

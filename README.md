@@ -78,8 +78,9 @@ RX 9070 XT, 1920x1080, nothing moving:
 |---|---|
 | Rooms, High (10 cm voxels) | 4.61 (217) |
 | Rooms, Low (25 cm voxels) | 2.85 (351) |
-| City, High (25 cm voxels, 64 x 24 x 64 m) | 6.28 (159) |
-| City, Low (40 cm voxels) | 3.25 (308) |
+| City, default (25 cm voxels, 64 x 24 x 64 m) | 6.75 (148) |
+| City, High (20 cm voxels) | 9.51 (105) |
+| City, Low (40 cm voxels) | 3.31 (302) |
 
 When the volume follows the camera into new ground, that frame takes about 12 ms.
 

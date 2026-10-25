@@ -704,7 +704,7 @@ func _run() -> void:
 		effect_world.cascades, effect_world.probe_spacing, str(effect_world.dynamic)])
 	report.append("static scene: collected in %.1f ms (%s), voxelized + lit in %.1f ms" % [
 		collect_ms, "CPU triangles" if user_args.has("--cpu-voxelize") else "GPU meshes", rebuild_ms])
-	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow") or user_args.has("--traffic")
+	var harness := user_args.has("--uitest") or user_args.has("--pop") or user_args.has("--shots") or user_args.has("--bench") or user_args.has("--artifacts") or user_args.has("--flicker") or user_args.has("--aatest") or user_args.has("--mattest") or user_args.has("--buildtest") or user_args.has("--follow") or user_args.has("--traffic") or user_args.has("--presettest")
 	if not harness:
 		_start_interactive()
 		return
@@ -718,6 +718,30 @@ func _run() -> void:
 		await _build_test(report)
 	if user_args.has("--follow"):
 		await _follow_test(report)
+	if user_args.has("--presettest"):
+		# The panel's presets on this scene: each one applied like a click, then 150 frames timed. And a volume too big to fit.
+		ui = UI.new()
+		add_child(ui)
+		ui.setup(self)
+		_pose("avenue" if city_mode else "aisle")
+		_set_mode("world")
+		var vp := get_viewport().get_viewport_rid()
+		for preset in ["default", "low", "high"]:
+			if preset == "default":
+				ui.reset_all()
+			else:
+				ui.apply_preset(preset)
+			await _frames(60)
+			var g: Array[float] = []
+			for i in 150:
+				await _frames(1)
+				g.append(RenderingServer.viewport_get_measured_render_time_gpu(vp))
+			g.sort()
+			report.append("preset %-7s: voxel %.3f m, probes %.2f m, dims %s, GPU median %.2f ms (%.0f FPS)" % [
+				preset, effect_world.voxel_size, effect_world.probe_spacing, effect_world.dims, g[g.size() / 2], 1000.0 / g[g.size() / 2]])
+		ui._pending["voxel"] = 0.1
+		ui.apply_quality()
+		report.append("10 cm voxels: %s" % ui._volume_label.text.replace("\n", " | "))
 	if user_args.has("--traffic"):
 		# A traffic light of block (1, 1) seen from above: where its green lens throws light on the sidewalk.
 		anim_auto = false
