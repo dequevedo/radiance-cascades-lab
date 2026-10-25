@@ -840,3 +840,26 @@ Seen close, the chrome and gold spheres were a mosaic of facets with black trian
 | close to the spheres, without / with | 0.04 % / 0.04 % | 5.4 % / 6.2 % |
 
 Cost (1920x1080, High, still, aisle view): 4.79 -> 4.83 ms. `--no-glass-tint` and `--no-sharp-reflections` switch them off.
+
+
+---
+
+# Step 16: the same picture, 0.8 ms cheaper
+
+Measured first, per pass (1920x1080, High, still): cascades 1.47 ms, near field 0.34 ms, final pass 1.97 ms, of which the
+edge fallback (`--no-edge-fix`) was 0.79 ms and the filter (`--no-denoise`) 0.39 ms. Two changes that leave the picture as it was:
+
+1. **The moving objects' volume is read only near them.** Every step of every cascade ray and near-field ray read two volumes,
+   the static voxels and the moving objects' coverage, which is empty everywhere but around the dolly and the television. The
+   second read is now skipped outside the moving objects' bounds (already padded by 0.3 m). Cascades 1.47 -> 0.92 ms, near
+   field 0.34 -> 0.27 ms.
+2. **The edge fallback reuses the small window.** The wide window (two tiles) contains the small one, whose sums are already
+   computed; it now adds only the ring around it. Final pass 1.97 -> 1.79 ms.
+
+| | before | after |
+|---|---|---|
+| Godot + radiance cascades, still | 4.84 ms (207 FPS) | 4.05 ms (247 FPS) |
+| with the dolly and its lamp moving | | 5.42 ms (185 FPS) |
+
+Picture check: every `--shots` view rendered with the old and the new code (the runs are deterministic: the same code twice
+differs by 0.000): mean difference 0.001 levels of 255, at most 0.07 % of the pixels by more than 3 levels.

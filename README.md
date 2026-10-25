@@ -60,8 +60,9 @@ RX 9070 XT, 1920x1080, High preset:
 
 | | ms (FPS) |
 |---|---|
-| Godot alone | 0.90 (1100) |
-| Godot + radiance cascades | 4.83 (207) |
+| Godot alone | 0.89 (1120) |
+| Godot + radiance cascades | 4.05 (247) |
+| the same, with the dolly and its lamp moving | 5.42 (185) |
 
 ## Limits
 

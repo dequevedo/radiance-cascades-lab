@@ -58,10 +58,17 @@ float pow8(float x) {
 	return x * x;
 }
 
-void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, inout vec3 acc, inout float ws, inout float ws_all) {
+// skip > 0: leave out the square that gather_window(..., skip, ...) covers (its sums are already in acc, ws and ws_all).
+void gather_window(ivec2 p, vec3 n, float dp, int na, ivec2 shift, int h, int skip, inout vec3 acc, inout float ws, inout float ws_all) {
 	ivec2 sz = ivec2(P.screen.xy);
+	int skip_hi = max(na - skip, skip + 1);
 	for (int oy = -h; oy < max(na - h, h + 1); oy++) {
+		bool row_inside = skip > 0 && oy >= -skip && oy < skip_hi;
 		for (int ox = -h; ox < max(na - h, h + 1); ox++) {
+			if (row_inside && ox >= -skip && ox < skip_hi) {
+				ox = skip_hi - 1;
+				continue;
+			}
 			ivec2 q = clamp(p + ivec2(ox, oy), ivec2(0), sz - 1);
 			vec4 dv = s_dir[((q.y + shift.y) % na) * na + (q.x + shift.x) % na];
 			ws_all += dv.w;
@@ -176,7 +183,7 @@ void main() {
 	vec3 acc = vec3(0.0);
 	float ws = 0.0;
 	float ws_all = 0.0;
-	gather_window(p, n, dp, na, shift, na / 2, acc, ws, ws_all);
+	gather_window(p, n, dp, na, shift, na / 2, 0, acc, ws, ws_all);
 	// Edge fallback: at the edge of an object, the neighbours across the edge are rejected and the pixel is left with part of the
 	// tile's directions: a biased value that repeats every tile (a dashed line along the silhouette). There the rays are also
 	// gathered over a window two tiles wide, so every direction is found on this side of the edge, and the two results are blended
@@ -184,10 +191,10 @@ void main() {
 	float coverage = ws_all > 0.0 ? ws / ws_all : 0.0;
 	vec3 gi = ws > 0.0 ? 4.0 * acc / ws : vec3(0.0);
 	if (edge_fix && coverage < 0.9) {
-		vec3 acc2 = vec3(0.0);
-		float ws2 = 0.0;
-		float ws_all2 = 0.0;
-		gather_window(p, n, dp, na, shift, na, acc2, ws2, ws_all2);
+		vec3 acc2 = acc;
+		float ws2 = ws;
+		float ws_all2 = ws_all;
+		gather_window(p, n, dp, na, shift, na, na / 2, acc2, ws2, ws_all2);
 		if (ws2 > 0.0) {
 			gi = mix(4.0 * acc2 / ws2, gi, smoothstep(0.6, 0.9, coverage));
 		}
