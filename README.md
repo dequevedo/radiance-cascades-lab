@@ -37,6 +37,8 @@ diffuse colour) but reflect the room in their own colour; glass lets the light t
 
 ![Light through the tinted glass pane](docs/readme/glass.jpg)
 
+![Chrome and gold spheres before and after the smooth-normal reflections](docs/readme/metal_spheres.jpg)
+
 **The dark room**, through the materials room. No lamp at all: a television on a stand, a sofa, a rug and a low table. The
 screen's light reaches the room only through the bounce, and its picture slowly changes colour, so the light in the room
 changes with it.
@@ -78,7 +80,7 @@ the same per cascade.
 | **Moving and changing lights** | the dolly's lamp, switches, the television's changing picture |
 | **Glowing surfaces** | emissive materials light the scene with no lamp (static ones, and moving ones like the TV screen) |
 | **More than one bounce** | last frame's probe light is fed back into the voxels; corridors and corners are no longer black |
-| **Metals** | no diffuse bounce; a Fresnel-weighted reflection of the room in their own colour |
+| **Metals** | no diffuse bounce; a Fresnel-weighted reflection of the room in their own colour, turned by Godot's smooth normals |
 | **Glossy plastic** | a 4 % reflection head-on, stronger at grazing angles |
 | **Glass** | see-through materials are left out of the voxels, so light passes |
 | **Solid objects, one-sided light** | closed meshes are filled inside, so no probe sits in the hollow of a box; a voxel shows its light only to rays coming from the side its surface faces, so nothing glows through or behind an object |
@@ -184,8 +186,7 @@ These numbers come from a fast desktop GPU with other programs running; treat th
 - **One volume, fixed in place.** The voxel volume does not follow the camera, so large open worlds are out of scope.
 - **Moving objects are boxes.** Characters, doors or anything that is not box-shaped would need a proper voxelizer.
 - **Reflections are blurred.** They come from probes that hold 16 directions each: right for satin and brushed metal, far too
-  soft for a mirror (Godot's own screen-space reflections, an option in the panel, give sharp on-screen ones). A few pixels of
-  a curved metal surface miss their material and show as dark specks.
+  soft for a mirror (Godot's own screen-space reflections, an option in the panel, give sharp on-screen ones).
 - **Glass is simply see-through** for the bounce light: no tint, no refraction.
 - **Up to 16 lights per frame**, and a soft, slightly blurry result in tight corners.
 - The screen-space version cannot see anything off screen, by construction.

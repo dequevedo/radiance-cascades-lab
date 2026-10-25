@@ -794,3 +794,21 @@ screen. Two causes, both from the voxels:
 
 `--hollow` and `--no-facing` switch each one off for A/B. Cost (1920x1080, High, still): 5.01 -> 5.00 ms of GPU for the effect
 (200 FPS), voxelizing 1.0 -> 1.4 ms.
+
+
+---
+
+# Step 14: smooth metal spheres, no black specks
+
+Seen close, the chrome and gold spheres were a mosaic of facets with black triangles on them. Three causes:
+
+1. **Facets**: the reflection direction came from the normal rebuilt from the depth buffer, which is flat per triangle (the
+   sphere has 48 x 24 segments). The effect now asks Godot for its `normal_roughness` buffer (`needs_normal_roughness`), whose
+   normals are interpolated across the triangles, and turns the reflection with it; where it disagrees strongly with the
+   depth normal (an edge) the depth normal is kept.
+2. **Black triangles**: the material lookup started 2.5 cm inside the surface. Wherever a facet runs close to a voxel
+   boundary, that point is already in the inside of the object, which is solid but carries no material, so the whole facet
+   was taken for a non-metal, whose colour in Godot's unshaded render is black. The search now starts on the surface
+   (0, +0.2, -0.15, +0.45, +0.8 voxels). Black holes inside the metal in the `world_metal` view: 138 px -> 0.
+3. **A seam across the reflection**, once the facets were gone: the blend of the 4 nearest directions clamped at the border
+   of the probes' octahedral map, where the map folds. Cells past the border now wrap to the mirrored cell.

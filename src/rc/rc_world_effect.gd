@@ -115,6 +115,7 @@ var inject_fraction := 1.0 # share of the volume re-lit in the last frame (0 = n
 
 func _init() -> void:
 	effect_callback_type = EFFECT_CALLBACK_TYPE_POST_TRANSPARENT
+	needs_normal_roughness = true # the smooth (interpolated) normals, for reflections: the depth buffer only gives flat facets
 	RenderingServer.call_on_render_thread(_init_rd)
 
 
@@ -796,6 +797,7 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 		var cur := _pp
 		cl = rd.compute_list_begin()
 		rd.compute_list_bind_compute_pipeline(cl, _pipe["nearfield"])
+		var nr_tex := buffers.get_texture("forward_clustered", "normal_roughness")
 		var near_set := UniformSetCacheRD.get_cache(_shader["nearfield"], 0,
 			[_ubo_u(), _img(1, _vox_albedo), depth_u, _img(10, inp), _img(12, _near_tex), _img(13, _nrm[cur]), _img(17, _spec_tex),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 18, [_sampler, _vox_mat]),
@@ -803,7 +805,8 @@ func _render_callback(_type: int, render_data: RenderData) -> void:
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 14, [_sampler_lin, _vox_albedo]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 15, [_sampler_lin, _vox_rad]),
 			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 16, [_sampler_lin, _vox_dyn]),
-			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 21, [_sampler_lin, _vox_nrm])])
+			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 21, [_sampler_lin, _vox_nrm]),
+			 _u(RenderingDevice.UNIFORM_TYPE_SAMPLER_WITH_TEXTURE, 22, [_sampler, nr_tex if nr_tex.is_valid() else buffers.get_depth_layer(0)])])
 		var npc := PackedFloat32Array([A0, near_dirs, shift_x, shift_y])
 		rd.compute_list_bind_uniform_set(cl, near_set, 0)
 		rd.compute_list_set_push_constant(cl, npc.to_byte_array(), 16)

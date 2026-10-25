@@ -631,6 +631,13 @@ func _run() -> void:
 			_set_mode(mode)
 			await _frames(40)
 			await _shot("mat_%s.png" % mode)
+		# Close to the chrome and gold spheres: facets and specks show here first.
+		cam.position = Vector3(-11.3, 1.3, -3.25)
+		cam.look_at(Vector3(-11.3, 0.75, -4.1))
+		for mode in ["world", "world_metal"]:
+			_set_mode(mode)
+			await _frames(40)
+			await _shot("mat_close_%s.png" % mode)
 		# The dark room at three moments of the television's picture.
 		_pose("tv_room")
 		for mode in ["off", "world"]:
