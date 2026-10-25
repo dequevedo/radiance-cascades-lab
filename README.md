@@ -159,22 +159,22 @@ Run with a flag after `--` and the lab writes images and numbers to `out/` (git-
 
 Switches for A/B measurements: `--cpu-voxelize`, `--inject-full`, `--far-every=1`, `--no-jitter`, `--no-edge-fix`,
 `--no-denoise`, `--still` (nothing moves), `--dense` (about 400,000 extra triangles), `--quality=default` (the cheaper preset)
-and `--aa=off|fxaa|smaa|taa|msaa`.
+`--hollow` (objects voxelized as shells), `--no-facing` (voxel light shown to every side) and `--aa=off|fxaa|smaa|taa|msaa`.
 
 ## Results on one machine
 
-RX 9070 XT, 1920x1080, High preset (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per pixel), TAA, measured before the
-materials room and the dark room were added:
+RX 9070 XT, 1920x1080, High preset (10 cm voxels, probes 0.35 m apart, 8 x 8 directions per pixel), TAA, the whole scene
+(store, corridor, materials room, dark room), GPU time of the viewport:
 
 | | ms (FPS) |
 |---|---|
-| Godot alone | 1.66 (603) |
-| Godot + radiance cascades, nothing moving | 5.31 (188) |
-| the same, with the dolly and its lamp moving | 6.41 (156) |
-| of which: cascades | 1.56 |
-| near-field rays | 0.39 |
-| final pass (gather, temporal, filter) | 1.95 |
-| re-lighting the voxels | 0.10 (0.39 with the dolly moving) |
+| Godot alone | 1.35 (740) |
+| Godot + radiance cascades, nothing moving | 5.00 (200) |
+| the same, volume frozen (no per-frame update) | 4.86 (206) |
+| of which: cascades | 1.47 |
+| near-field rays and reflections | 0.36 |
+| final pass (gather, temporal, filter) | 1.99 |
+| re-lighting the voxels | 0.13 (about 0.4-0.6 with the dolly and its lamp moving) |
 
 These numbers come from a fast desktop GPU with other programs running; treat them as orders of magnitude.
 `docs/DEVLOG.md` has every measurement behind every change, the ones that did not help included.
