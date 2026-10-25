@@ -37,7 +37,7 @@ diffuse colour) but reflect the room in their own colour; glass lets the light t
 
 ![Light through the tinted glass pane](docs/readme/glass.jpg)
 
-![Chrome and gold spheres before and after the smooth-normal reflections](docs/readme/metal_spheres.jpg)
+![Chrome and gold spheres reflecting the room](docs/readme/metal_spheres.jpg)
 
 **The dark room**, through the materials room. No lamp at all: a television on a stand, a sofa, a rug and a low table. The
 screen's light reaches the room only through the bounce, and its picture slowly changes colour, so the light in the room
@@ -87,8 +87,6 @@ the same per cascade.
 
 ![One bounce against more bounces, bounce light only](docs/readme/more_bounces.jpg)
 
-![Light behind the television: hollow objects with light on every side, and solid objects with one-sided light](docs/readme/tv_leak.jpg)
-
 ### Keeping it cheap and clean
 
 - **Static geometry is voxelized on the GPU** straight from the meshes' vertex and index arrays, so a prop can be dragged and
@@ -99,8 +97,6 @@ the same per cascade.
 - **Jittered rays**, **clean object edges** and an **edge-aware filter** remove the grid lines, dashed silhouettes and fine noise
   the method leaves. The temporal blend ignores differences below a noise floor, so a still image does not shimmer.
 - **Anti-aliasing**: Godot's TAA by default (off, FXAA, SMAA and MSAA 4x in the panel).
-
-![Before and after the image-quality fixes](docs/readme/artifacts_before_after.jpg)
 
 ## Running it
 
