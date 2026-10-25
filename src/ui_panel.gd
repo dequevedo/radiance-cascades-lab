@@ -6,6 +6,9 @@ extends CanvasLayer
 const BG := Color(0.05, 0.06, 0.08, 0.92)
 const ACCENT := Color(0.95, 0.65, 0.2)
 const DIM := Color(0.62, 0.66, 0.72)
+# The key that frees the mouse has its own colour everywhere it is shown, so it is never missed.
+const KEY_COLOR := Color(0.2, 0.85, 1.0)
+const FREE_COLOR := Color(0.35, 0.95, 0.45)
 const FONT := 12
 const WIDTH := 340.0
 const LABEL_W := 128.0
@@ -20,6 +23,10 @@ var _root: Control
 var _panel: PanelContainer
 var _readout: Label
 var _hint: Label
+var _hint_box: PanelContainer
+var _hint_style: StyleBoxFlat
+var _help: PanelContainer
+var _help_speed: Label
 var _status: Label
 var _heat_legend: Control
 var _controls: Array = [] # {widget, kind, default, setter}
@@ -102,12 +109,77 @@ func setup(m: Node3D) -> void:
 	_build_stats(_tab(tabs, "Stats"))
 	_no_focus(_root)
 
+	# The hint at the top of the screen: a coloured badge that says which key frees the mouse (cyan) or that it is free (green).
+	_hint_box = PanelContainer.new()
+	_hint_box.position = Vector2(WIDTH + 24, 10)
+	_hint_box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_hint_style = StyleBoxFlat.new()
+	_hint_style.bg_color = KEY_COLOR
+	_hint_style.set_corner_radius_all(6)
+	_hint_style.content_margin_left = 12
+	_hint_style.content_margin_right = 12
+	_hint_style.content_margin_top = 5
+	_hint_style.content_margin_bottom = 5
+	_hint_box.add_theme_stylebox_override("panel", _hint_style)
+	_root.add_child(_hint_box)
+	_build_help()
 	_hint = Label.new()
-	_hint.position = Vector2(WIDTH + 24, 10)
-	_hint.add_theme_color_override("font_color", Color(1, 1, 0.85))
-	_hint.add_theme_color_override("font_outline_color", Color.BLACK)
-	_hint.add_theme_constant_override("outline_size", 6)
-	_root.add_child(_hint)
+	_hint.add_theme_font_size_override("font_size", 15)
+	_hint.add_theme_color_override("font_color", Color(0.02, 0.05, 0.08))
+	_hint_box.add_child(_hint)
+
+
+## The controls, always on screen at the bottom right (H hides them).
+func _build_help() -> void:
+	_help = PanelContainer.new()
+	_help.anchor_left = 1.0
+	_help.anchor_right = 1.0
+	_help.anchor_top = 1.0
+	_help.anchor_bottom = 1.0
+	_help.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	_help.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_help.offset_right = -10
+	_help.offset_bottom = -10
+	_help.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = Color(0.05, 0.06, 0.08, 0.8)
+	sb.set_corner_radius_all(6)
+	sb.set_content_margin_all(8)
+	_help.add_theme_stylebox_override("panel", sb)
+	_root.add_child(_help)
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.add_theme_constant_override("h_separation", 12)
+	grid.add_theme_constant_override("v_separation", 1)
+	var col := VBoxContainer.new()
+	col.add_child(grid)
+	_help.add_child(col)
+	var rows := [
+		["'  (quote, above Tab)", "look mode on / off", KEY_COLOR],
+		["Right mouse (hold)", "look around", Color.WHITE],
+		["W A S D,  Q / E", "fly,  down / up", Color.WHITE],
+		["Shift,  mouse wheel", "faster,  fly speed", Color.WHITE],
+		["Left click", "select a prop", Color.WHITE],
+		["Drag the prop / an arrow", "move it on the floor / on one axis", Color.WHITE],
+		["F,  Esc", "frame the prop,  deselect", Color.WHITE],
+		["1 2 3 4 5", "Godot, + bounce, bounce only, heat map, screen-space", Color.WHITE],
+		["Space", "pause the moving dolly", Color.WHITE],
+		["H", "hide this list", Color.WHITE]]
+	for r in rows:
+		var k := Label.new()
+		k.text = r[0]
+		k.add_theme_color_override("font_color", r[2] if r[2] != Color.WHITE else ACCENT)
+		grid.add_child(k)
+		var v := Label.new()
+		v.text = r[1]
+		grid.add_child(v)
+	_help_speed = Label.new()
+	_help_speed.add_theme_color_override("font_color", DIM)
+	col.add_child(_help_speed)
+
+
+func toggle_help() -> void:
+	_help.visible = not _help.visible
 
 
 # --- builders ---------------------------------------------------------------------------------------
@@ -247,6 +319,18 @@ func _build_header(col: VBoxContainer) -> void:
 	reset.tooltip_text = "Every slider, switch and quality option back to how the lab starts."
 	reset.pressed.connect(reset_all)
 	top.add_child(reset)
+	var key_box := PanelContainer.new()
+	var ks := StyleBoxFlat.new()
+	ks.bg_color = KEY_COLOR
+	ks.set_corner_radius_all(4)
+	ks.set_content_margin_all(4)
+	key_box.add_theme_stylebox_override("panel", ks)
+	col.add_child(key_box)
+	var key_l := Label.new()
+	key_l.text = "'  (quote key, above Tab) = look mode on / off"
+	key_l.add_theme_color_override("font_color", Color(0.02, 0.05, 0.08))
+	key_l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	key_box.add_child(key_l)
 	_readout = _label(col, "", Color(0.85, 0.95, 1.0), 0, false)
 	_status = _label(col, "", ACCENT, 0, false)
 
@@ -370,11 +454,11 @@ func _build_scene(body: VBoxContainer) -> void:
 		"The work lamp on the rolling dolly.", "%.1f")
 	_check(body, "Dolly rolls", main.anim_auto, func(v): main.anim_auto = v,
 		"The dolly with cartons moves along the central aisle (Z / X move it by hand when stopped).")
-	_label(body, "Keys: WASD QE move, Shift fast, 1-5 views, G near field, T temporal, Space pause, Z/X move the dolly.", DIM)
+	_label(body, "Space pauses the dolly; with 'Dolly rolls' off, Z / X move it by hand.", DIM)
 
 
 func _build_object(body: VBoxContainer) -> void:
-	_label(body, "Free the mouse (quote key), hover a prop and click it. Drag an arrow of the gizmo to move it; Esc deselects.", DIM)
+	_label(body, "Click a prop to select it. Drag it to move it over the floor, or drag an arrow to move it along one axis. F frames it, Esc deselects.", DIM)
 	_obj_name = _label(body, "", Color.WHITE, 14, false)
 	_obj_info = _label(body, "", DIM, 0, false)
 	_obj_box = VBoxContainer.new()
@@ -580,7 +664,16 @@ func refresh(delta := 0.016) -> void:
 	_heat_legend.visible = main.live_mode == "world_heat"
 	var free: bool = main.mouse_is_free()
 	_panel.modulate.a = 1.0 if free else 0.6
-	_hint.text = "Mouse free: panel, click props, drag the gizmo.   Quote key (above Tab) to look around." if free else "Quote key (above Tab): mouse for the panel and the props   |   WASD QE move, Shift fast"
+	if main.look_mode:
+		_hint.text = "LOOK MODE: the mouse turns the camera.   Press  '  (quote, above Tab) or Esc for the cursor."
+		_hint_style.bg_color = FREE_COLOR
+	elif not free:
+		_hint.text = "Looking around (right mouse button held)"
+		_hint_style.bg_color = FREE_COLOR
+	else:
+		_hint.text = "CURSOR MODE: click a prop, use the panel.   Hold RIGHT MOUSE to look.   Press  '  (quote, above Tab) for look mode."
+		_hint_style.bg_color = KEY_COLOR
+	_help_speed.text = "Fly speed: %.1f m/s (mouse wheel)" % main.fly_speed
 	if picker != null:
 		_sync_object()
 	_refresh_stats(delta)

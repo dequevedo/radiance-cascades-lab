@@ -1,4 +1,11 @@
 ; Engine configuration file.
+; It's best edited using the editor UI and not directly,
+; since the parameters that go here are not all obvious.
+;
+; Format:
+;   [section] ; section goes between []
+;   param=value ; assign values to parameters
+
 config_version=5
 
 [application]
@@ -13,9 +20,12 @@ window/size/viewport_width=1280
 window/size/viewport_height=720
 window/vsync/vsync_mode=0
 
+[dotnet]
+
+project/assembly_name="Radiance Cascades Lab"
+
 [rendering]
 
-renderer/rendering_method="forward_plus"
-lights_and_shadows/positional_shadow/atlas_size=8192
 lights_and_shadows/positional_shadow/soft_shadow_filter_quality=4
 anti_aliasing/quality/use_debanding=true
+lights_and_shadows/positional_shadow/atlas_size=8192

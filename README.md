@@ -34,43 +34,43 @@ Three things keep the per-frame cost down:
   When nothing moves, that pass costs nothing.
 - **The far cascades are traced every other frame** and reused in between: far light changes slowly.
 
-## Scenes
+## The scene
 
-| Scene | What it tests |
-|---|---|
-| `tunnel` (default) | a curved tunnel with a lamp that moves along it and a moving cart: light travelling round a bend |
-| `shop` | a 14 x 9.5 m store with ~230 box props, six fluorescents (one flickers), a street lamp, a rolling dolly with a work lamp, a curved corridor with no lamp of its own, and the control panel |
-| `street` | a street at night with lamp posts: what happens when the lamp leaves the screen |
-| `room` | a trivial room, for the screen-space version |
+One scene holds everything: a 14 x 9.5 m store with ~230 box props, six fluorescents (one flickers), a sodium street lamp
+outside the windows, an optional sun, a dolly with a work lamp that rolls along the aisle, and a curved corridor off the store
+with no lamp of its own, to see how far light travels round a bend.
 
 ![The curved corridor next to the store, and the same view as a heat map of the bounce light](docs/readme/corridor_heat.jpg)
-
-![The tunnel, Godot alone and with world-space cascades](docs/readme/tunnel_comparison.jpg)
 
 ## Running it
 
 You need **Godot 4.7** (the standard build is enough) and a GPU with Vulkan compute support.
 
 ```sh
-godot --path . --rendering-driver vulkan -- --scene=shop
+godot --path . --rendering-driver vulkan
 ```
 
-Or, with `GODOT` set to your Godot executable (or `godot` on the `PATH`):
-
-| | |
-|---|---|
-| Windows | `.\scripts\run_shop.bat` (shop with the control panel), `.\scripts\run.bat --scene=tunnel` |
-| Linux / macOS | `./scripts/run.sh --scene=shop` |
+Or, with `GODOT` set to your Godot executable (or `godot` on the `PATH`): `.\scripts\run.bat` on Windows,
+`./scripts/run.sh` on Linux / macOS.
 
 ### Controls
 
-| Key | Action |
+The lab starts in **cursor mode**, like an editor: the cursor is free for the panel and the props, and holding the right mouse
+button looks around. The **quote key** (above Tab) switches to **look mode**, where the mouse turns the camera like in a game.
+A coloured badge at the top of the screen always says which mode you are in, and the list of controls stays at the bottom right
+(H hides it).
+
+| Input | Action |
 |---|---|
-| Quote key (above Tab) | free the mouse to use the control panel; press again to look around |
-| Mouse, WASD, Q / E, Shift | look, move, down / up, faster |
+| **Quote key (above Tab)** | look mode on / off (Esc also leaves it) |
+| Right mouse button (hold) | look around, in cursor mode |
+| W A S D, Q / E | fly; down / up |
+| Shift, mouse wheel | 3x faster; change the fly speed |
+| Left click | select a prop (orange outline, move gizmo); hovering shows a yellow outline |
+| Drag the prop / drag an arrow | move it over the floor / along that axis only |
+| F, Esc | frame the selected prop; deselect |
 | 1 / 2 / 3 / 4 / 5 | Godot only, + world bounce, bounce only, bounce heat map, + screen-space bounce |
-| G / T | per-pixel near field on/off, temporal smoothing on/off |
-| Space | pause the moving objects (Z / X move the dolly by hand when "Dolly rolls" is off in the panel) |
+| Space | pause the moving dolly (Z / X move it by hand when "Dolly rolls" is off) |
 
 ![The control panel and the object picker](docs/readme/control_panel.jpg)
 
@@ -78,8 +78,7 @@ The panel is split in tabs: **View** (view modes, split view, places to jump to)
 the performance switches), **Quality** (presets and volume sizes), **Scene** (the lights), **Object** (the selected prop) and
 **Stats** (GPU time of every pass), plus **Reset all**.
 
-In the shop, with the mouse free, hover a prop to highlight it and click it to select it; drag an arrow of the gizmo to move it
-(Esc deselects). The bounce light follows, because the scene is voxelized again on the GPU while the prop moves.
+While a prop moves, the bounce light follows it: the scene is voxelized again on the GPU as it is dragged.
 
 ![Moving a prop: the bounce light before and after](docs/readme/object_picker.jpg)
 
@@ -91,20 +90,16 @@ In the shop, with the mouse free, hover a prop to highlight it and click it to s
 
 Run with a flag after `--` and the lab writes images and numbers to `out/` (git-ignored), then quits:
 
-| Flag | Scene | What it does |
-|---|---|---|
-| `--shots` | all | fixed camera poses, each with the effect off, on, and indirect only |
-| `--bench` | all | GPU time with the effect off and on, and per pass |
-| `--travel` | tunnel | how far the bounce reaches round the bend, and how fast it follows a moving lamp |
-| `--pop` | tunnel, shop | frame-to-frame jumps at fixed floor points while an object moves past (flicker) |
-| `--lag` | tunnel | how far the temporal blend trails behind a moving shadow |
-| `--leak` | tunnel | light on the outer face of a wall that should be dark |
-| `--motionmaps` | tunnel | difference images of two frames a few centimetres apart |
-| `--uitest` | shop | drives the control panel (views, object picker, split view, presets, reset) and checks the values come back |
+| Flag | What it does |
+|---|---|
+| `--shots` | fixed camera poses, each with the effect off, on, indirect only and as a heat map |
+| `--bench` | GPU time with the effect off and on, and per pass |
+| `--pop` | frame-to-frame jumps at fixed floor points while the dolly moves past (flicker) |
+| `--uitest` | drives the control panel (views, object picker, split view, presets, reset) and checks the values come back |
 
 Switches for A/B measurements: `--cpu-voxelize` (pack the triangles on the CPU, as before), `--inject-full` (light the whole
 volume every frame), `--far-every=1` (trace every cascade every frame), `--still` (nothing moves, no light changes) and
-`--dense` (about 400,000 extra triangles in the shop).
+`--dense` (about 400,000 extra triangles).
 
 ## Results on one machine
 
@@ -119,8 +114,8 @@ RX 9070 XT, 1920x1080, everything dynamic (voxels of moving objects and lights r
 | near-field rays | 0.33 |
 | final gather + temporal | 0.60 |
 
-Flicker around a moving object, as the mean / max frame-to-frame jump at 20 floor points (x1000, signal about 780):
-0.70 / 7.5 with temporal smoothing, 3.4 / 30 without. Light through a wall on the far side: 0.0.
+Flicker around the moving dolly, as the mean / max frame-to-frame jump at 20 floor points (x1000, signal about 780):
+0.70 / 7.5 with temporal smoothing, 3.4 / 30 without.
 
 What the three optimizations saved (same machine, 1920x1080, shop, `--bench`; old = `--cpu-voxelize --inject-full --far-every=1`):
 
@@ -148,10 +143,10 @@ These numbers come from a fast desktop GPU with other programs running; treat th
 
 ```
 project.godot, main.tscn   Godot project (main.tscn runs src/main.gd)
-src/main.gd                scenes, camera, interactive mode and the test harness
+src/main.gd                camera, controls, interactive mode and the test harness
 src/shop_scene.gd          the store and the curved corridor (box props in KIT)
 src/ui_panel.gd            the control panel
-src/object_picker.gd       hover, select and move props (shop)
+src/object_picker.gd       hover, select and move props (outlines, move gizmo)
 src/rc/rc_effect.gd        screen-space radiance cascades
 src/rc/rc_world_effect.gd  world-space radiance cascades
 src/rc/shaders/            compute shaders (.comp) and their includes (.inc)

@@ -639,3 +639,19 @@ dolly rolling. The cost: light that reaches far changes up to one frame late.
 - Stats: GPU time per pass (averaged), the share of the volume re-lit, whether the far cascades were traced this frame.
 
 Not tested with a real mouse: the picker and the split line were driven by the test harness (`--uitest`) in a hidden window.
+
+
+---
+
+# Step 7: one scene, clearer controls
+
+- **One scene.** The tunnel, the street and the room are gone; the store already had everything they tested (a curved corridor,
+  a moving object with a lamp, a lamp outside the windows, a flickering light). The tests that only existed for them (`--travel`,
+  `--lag`, `--leak`, `--motion`, `--motionmaps`, `--closeups`, `--sweep`) went with them; their results above stay as they were
+  measured, and the code is in the history.
+- **Controls like an editor.** The lab starts with a free cursor; holding the right mouse button looks around, the mouse wheel
+  sets the fly speed, the quote key switches to a game-like look mode. A coloured badge at the top always says the mode, and the
+  controls are listed at the bottom right (H hides them).
+- **Props.** Selection draws an outline (the back faces of a slightly larger copy of each part) instead of a tint; the gizmo has
+  real arrows (a shaft and a cone each, drawn on top). Dragging the prop itself moves it over the floor, dragging an arrow moves it
+  along one axis, F frames it.
