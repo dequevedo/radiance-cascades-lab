@@ -812,3 +812,31 @@ Seen close, the chrome and gold spheres were a mosaic of facets with black trian
    (0, +0.2, -0.15, +0.45, +0.8 voxels). Black holes inside the metal in the `world_metal` view: 138 px -> 0.
 3. **A seam across the reflection**, once the facets were gone: the blend of the 4 nearest directions clamped at the border
    of the probes' octahedral map, where the map folds. Cells past the border now wrap to the mirrored cell.
+
+
+---
+
+# Step 15: tinted glass, sharp reflections, and a blinking floor
+
+- **Tinted glass.** A see-through surface is no longer just left out of the voxels: it writes the colour it lets through into
+  its own volume. The rays of the cascades and of the near field, and the shadow rays of the voxels' direct light, multiply
+  by `pow(colour, coverage x step / voxel)` while they cross it, so a pane colours a ray once however the samples fall on it.
+  Only rays inside the bounds of the glass look it up. Godot's own direct light through the pane stays white (Godot has no
+  coloured shadows); the bounce light behind it turns blue.
+- **Sharp reflections.** For surfaces with roughness below 0.45, the near-field pass first marches the mirror ray in view
+  space against the depth buffer (40 steps, then 5 halvings) and, where it finds the surface, takes its colour; the probes'
+  blurred reflection fills in off screen, behind things, and towards the camera, with a smooth blend at the edges. The colour
+  comes from **last frame's finished picture**, reprojected (`copy_color.comp` keeps a copy; Godot's colour buffer cannot be
+  copied from): in this frame's picture, before the effect, Godot draws a metal nearly black, so the chrome sphere reflected
+  the gold one as a dark hole.
+- **The checker floor blinked.** Step 14 started the material lookup exactly on the surface. The floor lies on a voxel
+  boundary, so as Godot's TAA jittered the picture the lookup found one layer or the other and the floor's sheen switched on
+  and off: pixels changing by more than 3 levels with the camera still went 0.15 % -> 3.5 % in the entrance view (found by
+  running `--flicker` on four older commits). The lookup now starts 5 mm inside: back to 0.15 %, no black specks on the metals.
+
+| `--flicker`, pixels changing by more than 3 levels | still | moving |
+|---|---|---|
+| entrance, without / with sharp reflections | 0.14 % / 0.15 % | 2.1 % / 2.5 % |
+| close to the spheres, without / with | 0.04 % / 0.04 % | 5.4 % / 6.2 % |
+
+Cost (1920x1080, High, still, aisle view): 4.79 -> 4.83 ms. `--no-glass-tint` and `--no-sharp-reflections` switch them off.

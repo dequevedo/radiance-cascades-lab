@@ -9,6 +9,8 @@ layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 layout(set = 0, binding = 1, rgba8) uniform restrict readonly image3D vox_albedo;
 layout(set = 0, binding = 8) uniform sampler2D depth_tex;
+layout(set = 0, binding = 9, rgba16f) uniform restrict readonly image2D color_img; // the lit picture (sharp reflections)
+layout(set = 0, binding = 24, rgba16f) uniform restrict readonly image2D prev_img; // last frame's finished picture
 layout(set = 0, binding = 10, rgba16f) uniform restrict readonly image3D c0_img;
 layout(set = 0, binding = 12, rgba16f) uniform restrict writeonly image2D near_img;
 layout(set = 0, binding = 13, rgba16f) uniform restrict writeonly image2D nrm_img;
@@ -18,6 +20,7 @@ layout(set = 0, binding = 19) uniform sampler3D base_tex; // per voxel: base col
 layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
 layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
 layout(set = 0, binding = 22) uniform sampler2D smooth_tex; // Godot's normal_roughness: view-space normal * 0.5 + 0.5, interpolated across triangles
+layout(set = 0, binding = 23) uniform sampler3D tint_tex; // see-through voxels: the colour they let through (voxelize_mesh.comp)
 layout(set = 0, binding = 21) uniform sampler3D nrm_tex; // surface normal per voxel (inject.comp)
 layout(set = 0, binding = 15) uniform sampler3D rad_tex; // vox_rad, trilinear: rgb premultiplied by alpha (= surface voxel weight)
 
@@ -27,6 +30,19 @@ layout(push_constant, std430) uniform Near {
 
 //#include trace.inc
 //#include screen.inc
+
+// Coloured glass: the voxels of a see-through surface hold the colour it lets through. Multiplying by
+// pow(colour, coverage * step / voxel) colours a ray once per pane, however its samples fall on the pane.
+vec3 glass_filter(vec3 pos, vec3 uvw, float step_len) {
+	if (P.glass_min.w < 0.5 || any(lessThan(pos, P.glass_min.xyz)) || any(greaterThan(pos, P.glass_max.xyz))) {
+		return vec3(1.0);
+	}
+	vec4 g = textureLod(tint_tex, uvw, 0.0);
+	if (g.a < 0.01) {
+		return vec3(1.0);
+	}
+	return pow(clamp(g.rgb / g.a, vec3(0.02), vec3(1.0)), vec3(g.a * step_len / P.vol_min.w));
+}
 
 // How much of a surface voxel's light a ray travelling along dir sees: the light leaves the side the surface faces (the normal
 // inject.comp found), so a voxel seen from behind, or the edge of a glowing screen seen from behind the set, gives none.
@@ -111,6 +127,75 @@ vec3 probe_blend_dir(vec3 pw, vec3 nw, vec3 d, int a0) {
 	return acc;
 }
 
+// A sharp reflection from the picture itself: the mirror ray is marched in view space until it passes behind what the depth
+// buffer shows, and the colour there is the reflection. rgb, and how much to trust it (0 = not found: off screen, hidden,
+// or pointing back at the camera). Rough surfaces keep the probes' blurred reflection instead.
+vec4 screen_reflection(vec3 vpos, vec3 vn, vec3 rv, float seed) {
+	if (rv.z > 0.7) {
+		return vec4(0.0);
+	}
+	vec3 o = vpos + vn * 0.01;
+	float t = 0.02 + 0.03 * seed;
+	float t_prev = 0.0;
+	bool hit = false;
+	for (int i = 0; i < 40; i++) {
+		vec3 q = o + rv * t;
+		if (q.z > -0.05) {
+			break;
+		}
+		vec4 c = P.proj * vec4(q, 1.0);
+		vec2 uv = c.xy / c.w * 0.5 + 0.5;
+		if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+			break;
+		}
+		ivec2 px = ivec2(uv * P.screen.xy);
+		float d = texelFetch(depth_tex, px, 0).r;
+		float behind = view_pos(px, d).z - q.z; // > 0: the surface in the picture is in front of the ray
+		if (d > SKY_DEPTH && behind > 0.0) {
+			if (behind < 0.06 + t * 0.08) {
+				hit = true;
+			}
+			break;
+		}
+		t_prev = t;
+		t += 0.02 + t * 0.12;
+	}
+	if (!hit) {
+		return vec4(0.0);
+	}
+	// Refine between the last point in front and the first behind.
+	float lo = t_prev;
+	float hi = t;
+	for (int k = 0; k < 5; k++) {
+		float mid = (lo + hi) * 0.5;
+		vec3 q = o + rv * mid;
+		vec4 c = P.proj * vec4(q, 1.0);
+		ivec2 px = ivec2(clamp(c.xy / c.w * 0.5 + 0.5, vec2(0.0), vec2(0.9999)) * P.screen.xy);
+		if (view_pos(px, texelFetch(depth_tex, px, 0).r).z - q.z > 0.0) {
+			hi = mid;
+		} else {
+			lo = mid;
+		}
+	}
+	vec4 c = P.proj * vec4(o + rv * hi, 1.0);
+	vec2 uv = c.xy / c.w * 0.5 + 0.5;
+	ivec2 px = ivec2(clamp(uv, vec2(0.0), vec2(0.9999)) * P.screen.xy);
+	vec2 edge = min(uv, 1.0 - uv);
+	float conf = smoothstep(0.0, 0.08, min(edge.x, edge.y)) * (1.0 - smoothstep(0.3, 0.7, rv.z));
+	// A metal in the picture is nearly black (Godot draws it with no reflections of its own): there the probes do better.
+	// The colour comes from last frame's finished picture, reprojected: it has the bounce light, and a metal in it shows its own
+	// reflection (in this frame's picture, before the effect, Godot draws a metal nearly black).
+	if ((int(P.screen.w + 0.5) & 64) != 0) {
+		vec3 hw = (P.cam_to_world * vec4(view_pos(px, texelFetch(depth_tex, px, 0).r), 1.0)).xyz;
+		vec4 pc4 = P.prev_vp * vec4(hw, 1.0);
+		vec2 puv = pc4.xy / pc4.w * 0.5 + 0.5;
+		if (pc4.w > 0.0 && all(greaterThanEqual(puv, vec2(0.0))) && all(lessThan(puv, vec2(1.0)))) {
+			return vec4(imageLoad(prev_img, ivec2(puv * P.screen.xy)).rgb, conf);
+		}
+	}
+	return vec4(imageLoad(color_img, px).rgb, conf);
+}
+
 void main() {
 	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
 	if (any(greaterThanEqual(p, ivec2(P.screen.xy)))) {
@@ -154,12 +239,14 @@ void main() {
 		float step_len = P.extra.x / float(STEPS);
 		vec3 extent = P.vol_dims.xyz * vs;
 		float T = 1.0;
+		vec3 Tc = vec3(1.0); // colour picked up crossing glass
 		for (int i = 0; i < STEPS && T > 0.02; i++) {
 			vec3 pos = o + dir * ((float(i) + j0) * step_len);
 			vec3 uvw = (pos - P.vol_min.xyz) / extent;
 			if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
 				break;
 			}
+			Tc *= glass_filter(pos, uvw, step_len);
 			float occ = max(textureLod(occ_tex, uvw, 0.0).a, textureLod(dyn_tex, uvw, 0.0).a);
 			if (occ > 0.01) {
 				vec4 r = textureLod(rad_tex, uvw, 0.0);
@@ -171,12 +258,12 @@ void main() {
 				if (jitter) {
 					a *= clamp(((float(i) + j0) * step_len) / (vs * 1.5), 0.0, 1.0);
 				}
-				rad += T * a * min(surf, vec3(P.tune.z)) * facing_weight(uvw, dir);
+				rad += T * Tc * a * min(surf, vec3(P.tune.z)) * facing_weight(uvw, dir);
 				T *= 1.0 - a;
 			}
 		}
 		if (T > 0.02) {
-			rad += T * probe_blend(pw, nw, ij, a0, pj);
+			rad += T * Tc * probe_blend(pw, nw, ij, a0, pj);
 		}
 	}
 	imageStore(near_img, p, vec4(rad, 1.0));
@@ -189,7 +276,9 @@ void main() {
 	vec3 muvw = vec3(0.0);
 	// The search starts on the surface: a point already 2.5 cm inside lands in the inside of the object (solid but with no
 	// material) wherever a facet runs close to a voxel boundary, and the whole facet came out black on a metal.
-	const float LOOKUP[5] = float[5](0.0, 0.2, -0.15, 0.45, 0.8);
+	// Not exactly on it either: a floor at a voxel boundary would find one layer or the other as the picture jitters, and its
+	// sheen would blink on and off.
+	const float LOOKUP[5] = float[5](0.05, 0.25, -0.15, 0.45, 0.8);
 	for (int k = 0; k < 5 && m.a < 0.5; k++) {
 		muvw = (pw - nw * P.vol_min.w * LOOKUP[k] - P.vol_min.xyz) / (P.vol_dims.xyz * P.vol_min.w);
 		m = textureLod(mat_tex, muvw, 0.0);
@@ -211,7 +300,13 @@ void main() {
 		vec3 base = textureLod(base_tex, muvw, 0.0).rgb;
 		vec3 f0 = mix(vec3(0.04), base, metallic);
 		vec3 fresnel = f0 + (1.0 - f0) * pow(1.0 - clamp(dot(ns, v), 0.0, 1.0), 5.0);
-		spec = fresnel * probe_blend_dir(pw, nw, r, a0) * mix(1.0, 0.3, rough / 0.85);
+		vec3 refl = probe_blend_dir(pw, nw, r, a0);
+		if ((int(P.screen.w + 0.5) & 32) != 0 && rough < 0.45) {
+			mat3 to_view = transpose(mat3(P.cam_to_world));
+			vec4 sr = screen_reflection(vpos, to_view * ns, normalize(to_view * r), j0);
+			refl = mix(refl, sr.rgb, sr.a * (1.0 - smoothstep(0.1, 0.45, rough)));
+		}
+		spec = fresnel * refl * mix(1.0, 0.3, rough / 0.85);
 	}
 	imageStore(spec_img, p, vec4(spec, metallic));
 }

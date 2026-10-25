@@ -12,6 +12,7 @@ layout(set = 0, binding = 22, rgba16f) uniform restrict readonly image3D amb_img
 layout(set = 0, binding = 23, rgba16f) uniform restrict readonly image3D emit_img; // emission of the static surfaces (rgb, a = emissive)
 layout(set = 0, binding = 24, rgba16f) uniform restrict readonly image3D dyn_emit_img; // emission of the moving objects
 layout(set = 0, binding = 25, rgba8_snorm) uniform restrict writeonly image3D vox_nrm; // surface normal (rays: which side the light shows on)
+layout(set = 0, binding = 26) uniform sampler3D tint_tex; // see-through voxels: the colour they let through
 layout(set = 0, binding = 4, std430) restrict readonly buffer Lights {
 	vec4 l[]; // per light: (pos, range), (color*energy, type 0=omni 1=directional), (dir to light, decay)
 } lights;
@@ -83,12 +84,35 @@ float soft_march(vec3 o, vec3 l, float t_a, float t_b) {
 // Light that reaches o from direction l over a distance `stop`: the exact voxel walk through the static geometry, times the soft
 // transmittance of the moving objects (only where the ray crosses their bounds). The two layers are independent, so the result
 // is continuous when an object moves: there is no switch between two ways of computing the shadow.
-float shadow(vec3 o, vec3 l, float stop) {
+// The colour a light ray picks up crossing glass (marched only where it crosses the bounds of the glass).
+vec3 glass_march(vec3 o, vec3 l, float stop) {
+	if (P.glass_min.w < 0.5) {
+		return vec3(1.0);
+	}
+	vec3 invd = 1.0 / (l + vec3(equal(l, vec3(0.0))) * 1e-8);
+	vec3 ta = (P.glass_min.xyz - o) * invd;
+	vec3 tb = (P.glass_max.xyz - o) * invd;
+	float t_in = max(max(max(min(ta.x, tb.x), min(ta.y, tb.y)), min(ta.z, tb.z)), 0.0);
+	float t_out = min(min(min(max(ta.x, tb.x), max(ta.y, tb.y)), max(ta.z, tb.z)), stop);
+	vec3 c = vec3(1.0);
+	float step_len = P.vol_min.w * 0.5;
+	vec3 extent = P.vol_dims.xyz * P.vol_min.w;
+	for (float t = t_in + step_len * 0.5; t < t_out; t += step_len) {
+		vec4 g = textureLod(tint_tex, (o + l * t - P.vol_min.xyz) / extent, 0.0);
+		if (g.a > 0.01) {
+			c *= pow(clamp(g.rgb / g.a, vec3(0.02), vec3(1.0)), vec3(g.a * 0.5));
+		}
+	}
+	return c;
+}
+
+vec3 shadow(vec3 o, vec3 l, float stop) {
 	ivec3 hc;
 	bool lv;
 	if (dda(o, l, 0.0, stop, hc, lv)) {
-		return 0.0;
+		return vec3(0.0);
 	}
+	vec3 glass = glass_march(o, l, stop);
 	if (P.dyn_min.w > 0.5) {
 		vec3 invd = 1.0 / (l + vec3(equal(l, vec3(0.0))) * 1e-8);
 		vec3 ta = (P.dyn_min.xyz - o) * invd;
@@ -98,10 +122,10 @@ float shadow(vec3 o, vec3 l, float stop) {
 		float t_in = max(max(max(tlo.x, tlo.y), tlo.z), 0.0);
 		float t_out = min(min(min(thi.x, thi.y), thi.z), stop);
 		if (t_in < t_out) {
-			return soft_march(o, l, t_in, t_out);
+			return glass * soft_march(o, l, t_in, t_out);
 		}
 	}
-	return 1.0;
+	return glass;
 }
 
 void main() {
@@ -190,11 +214,11 @@ void main() {
 			continue;
 		}
 		float stop = b.w < 0.5 ? max(dist - 0.5, 0.0) : dist;
-		float lit = shadow(spos, l, stop);
-		if (lit <= 0.0) {
+		vec3 lit = shadow(spos, l, stop);
+		if (max(max(lit.r, lit.g), lit.b) <= 0.0) {
 			continue;
 		}
-		direct += b.rgb * (cosv * atten * lit);
+		direct += b.rgb * (cosv * atten) * lit;
 	}
 	vec3 bounce = region.o.w > 0.0 ? region.o.w * min(ambient_at(pos, n), vec3(P.tune.z)) : vec3(0.0);
 	vec4 em = imageLoad(emit_img, c);

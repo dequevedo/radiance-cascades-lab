@@ -12,6 +12,7 @@ layout(set = 0, binding = 6, rgba16f) uniform restrict readonly image3D upper_im
 layout(set = 0, binding = 7, rgba16f) uniform restrict writeonly image3D out_img;
 layout(set = 0, binding = 14) uniform sampler3D occ_tex; // static voxels, trilinear: alpha = occupancy 0..1
 layout(set = 0, binding = 16) uniform sampler3D dyn_tex; // moving objects only (their own volume), trilinear: alpha = coverage 0..1
+layout(set = 0, binding = 23) uniform sampler3D tint_tex; // see-through voxels: the colour they let through (voxelize_mesh.comp)
 layout(set = 0, binding = 21) uniform sampler3D nrm_tex; // surface normal per voxel (inject.comp)
 layout(set = 0, binding = 15) uniform sampler3D rad_tex; // vox_rad, trilinear: rgb premultiplied by alpha (= surface voxel weight)
 layout(set = 0, binding = 19, rgba16f) uniform restrict readonly image3D pw_lo;
@@ -23,6 +24,19 @@ layout(push_constant, std430) uniform Cascade {
 } pc;
 
 //#include trace.inc
+
+// Coloured glass: the voxels of a see-through surface hold the colour it lets through. Multiplying by
+// pow(colour, coverage * step / voxel) colours a ray once per pane, however its samples fall on the pane.
+vec3 glass_filter(vec3 pos, vec3 uvw, float step_len) {
+	if (P.glass_min.w < 0.5 || any(lessThan(pos, P.glass_min.xyz)) || any(greaterThan(pos, P.glass_max.xyz))) {
+		return vec3(1.0);
+	}
+	vec4 g = textureLod(tint_tex, uvw, 0.0);
+	if (g.a < 0.01) {
+		return vec3(1.0);
+	}
+	return pow(clamp(g.rgb / g.a, vec3(0.02), vec3(1.0)), vec3(g.a * step_len / P.vol_min.w));
+}
 
 // How much of a surface voxel's light a ray travelling along dir sees: the light leaves the side the surface faces (the normal
 // inject.comp found), so a voxel seen from behind, or the edge of a glowing screen seen from behind the set, gives none.
@@ -84,18 +98,20 @@ void main() {
 	vec3 extent = P.vol_dims.xyz * P.vol_min.w;
 	vec3 L = vec3(0.0);
 	float T = 1.0;
+	vec3 Tc = vec3(1.0); // colour picked up crossing glass
 	for (int i = 0; i < steps && T > 0.02; i++) {
 		vec3 pos = ppos + dir * (pc.b.x + (float(i) + 0.5) * st);
 		vec3 uvw = (pos - P.vol_min.xyz) / extent;
 		if (any(lessThan(uvw, vec3(0.0))) || any(greaterThan(uvw, vec3(1.0)))) {
 			break;
 		}
+		Tc *= glass_filter(pos, uvw, st);
 		float occ = max(textureLod(occ_tex, uvw, 0.0).a, textureLod(dyn_tex, uvw, 0.0).a);
 		if (occ > 0.01) {
 			vec4 r = textureLod(rad_tex, uvw, 0.0);
 			vec3 surf = r.a > 0.01 ? r.rgb / r.a : vec3(0.0);
 			float a = clamp(occ * OCC_GAIN, 0.0, 1.0);
-			L += T * a * min(surf, vec3(P.tune.z)) * facing_weight(uvw, dir);
+			L += T * Tc * a * min(surf, vec3(P.tune.z)) * facing_weight(uvw, dir);
 			T *= 1.0 - a;
 		}
 	}
@@ -103,6 +119,6 @@ void main() {
 	if (T > 0.02) {
 		rest = top ? P.sky.rgb : sample_upper(probe, dij, an, spacing);
 	}
-	vec3 result = L + T * rest;
+	vec3 result = L + T * Tc * rest;
 	imageStore(out_img, g, vec4(result, 1.0));
 }

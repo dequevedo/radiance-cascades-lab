@@ -8,6 +8,7 @@ layout(set = 0, binding = 1, rgba8) uniform restrict writeonly image3D vox_albed
 layout(set = 0, binding = 2, rgba16f) uniform restrict writeonly image3D vox_emit; // emission rgb, a = 1 where emissive
 layout(set = 0, binding = 3, rgba8) uniform restrict writeonly image3D vox_mat; // metallic, roughness, -, 1 = surface
 layout(set = 0, binding = 4, rgba8) uniform restrict writeonly image3D vox_base; // base colour (what a metal reflects with)
+layout(set = 0, binding = 8, rgba8) uniform restrict writeonly image3D vox_tint; // see-through surfaces: the colour they let through
 layout(set = 0, binding = 7, r32i) uniform restrict iimage3D vox_wind; // winding-number steps along +x (fill_solid.comp)
 layout(set = 0, binding = 5, std430) restrict readonly buffer Verts {
 	float v[]; // world-space positions, x y z packed
@@ -119,16 +120,17 @@ vec3 vertex(uint k) {
 
 void main() {
 	uint t = gl_GlobalInvocationID.x;
-	if (t >= uint(pc.a.x) || pc.mat.z > 0.5) {
-		return; // glass and other see-through surfaces do not block or bounce light here
+	if (t >= uint(pc.a.x)) {
+		return;
 	}
+	bool see_through = pc.mat.z > 0.5; // glass: it neither blocks nor bounces light; it colours what goes through it
 	// A metal has no diffuse colour: what it reflects is specular, so it bounces no diffuse light.
 	vec3 diffuse = pc.albedo.rgb * (1.0 - pc.mat.x);
 	vec3 a = vertex(t * 3u);
 	vec3 b = vertex(t * 3u + 1u);
 	vec3 c = vertex(t * 3u + 2u);
 	ivec3 dims = ivec3(P.vol_dims.xyz);
-	if (pc.mat.w > 0.5) {
+	if (pc.mat.w > 0.5 && !see_through) {
 		winding_steps(a, b, c, dims);
 	}
 	vec3 lo_f = min(min(a, b), c);
@@ -142,6 +144,10 @@ void main() {
 		for (int y = lo.y; y <= hi.y; y++) {
 			for (int x = lo.x; x <= hi.x; x++) {
 				if (tri_box_overlap(vec3(x, y, z) + 0.5, vec3(0.5), a, b, c)) {
+					if (see_through) {
+						imageStore(vox_tint, ivec3(x, y, z), vec4(pc.albedo.rgb, 1.0));
+						continue;
+					}
 					imageStore(vox_albedo, ivec3(x, y, z), vec4(diffuse, 1.0));
 					imageStore(vox_mat, ivec3(x, y, z), vec4(pc.mat.x, pc.mat.y, 0.0, 1.0));
 					imageStore(vox_base, ivec3(x, y, z), vec4(pc.albedo.rgb, 1.0));

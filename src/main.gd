@@ -487,13 +487,15 @@ func _flicker(report: PackedStringArray) -> void:
 	var views := {
 		"entrance": [Vector3(4.0, 1.6, 4.2), Vector3(-2.5, 1.3, -1.8)],
 		"cooler": [Vector3(4.55, 1.45, -3.15), Vector3(5.3, 0.25, -2.2)],
+		"spheres": [Vector3(-11.3, 1.3, -3.25), Vector3(-11.3, 0.75, -4.1)],
 	}
 	var base_aa := aa_mode # the reference "godot" frames use the same anti-aliasing as the run (--aa=...)
 	var base := {"jitter": effect_world.jitter, "edge_fix": effect_world.edge_fix, "denoise": effect_world.denoise,
 		"far_every": effect_world.far_every, "temporal_adaptive": effect_world.temporal_adaptive, "temporal_alpha": effect_world.temporal_alpha,
 		"temporal_noise_floor": effect_world.temporal_noise_floor, "temporal_min_change": effect_world.temporal_min_change,
-		"bounce": effect_world.bounce, "history_aware": effect_world.history_aware}
-	var configs := [["godot", {}], ["now", {}], ["no_history_aware", {"history_aware": false}], ["no_bounce", {"bounce": 0.0}]]
+		"bounce": effect_world.bounce, "history_aware": effect_world.history_aware,
+		"sharp_reflections": effect_world.sharp_reflections}
+	var configs := [["godot", {}], ["now", {}], ["no_history_aware", {"history_aware": false}], ["no_bounce", {"bounce": 0.0}], ["no_sharp", {"sharp_reflections": false}]]
 	for view in views:
 		for cfg in configs:
 			for k in base:
@@ -590,6 +592,8 @@ func _run() -> void:
 	effect_world.inject_partial = not user_args.has("--inject-full")
 	effect_world.solid_fill = not user_args.has("--hollow")
 	effect_world.facing = not user_args.has("--no-facing")
+	effect_world.glass_tint = not user_args.has("--no-glass-tint")
+	effect_world.sharp_reflections = not user_args.has("--no-sharp-reflections")
 	effect_world.jitter = not user_args.has("--no-jitter")
 	effect_world.edge_fix = not user_args.has("--no-edge-fix")
 	effect_world.denoise = not user_args.has("--no-denoise")
@@ -631,6 +635,12 @@ func _run() -> void:
 			_set_mode(mode)
 			await _frames(40)
 			await _shot("mat_%s.png" % mode)
+		# The tinted glass pane: the light behind it takes its colour.
+		_pose("glass")
+		for mode in ["world", "world_gi"]:
+			_set_mode(mode)
+			await _frames(40)
+			await _shot("glass_%s.png" % mode)
 		# Close to the chrome and gold spheres: facets and specks show here first.
 		cam.position = Vector3(-11.3, 1.3, -3.25)
 		cam.look_at(Vector3(-11.3, 0.75, -4.1))

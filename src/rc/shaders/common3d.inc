@@ -14,6 +14,8 @@ layout(set = 0, binding = 0, std140) uniform Params {
 	mat4 prev_vp;      // world -> previous frame clip (for reprojecting the history)
 	vec4 dyn_min;      // bounds of the moving objects (xyz), w = 1 when there are any
 	vec4 dyn_max;      // w = temporal noise floor
+	vec4 glass_min;    // bounds of the see-through surfaces (xyz), w = 1 when there are any
+	vec4 glass_max;
 } P;
 
 const float SKY_DEPTH = 1e-6;

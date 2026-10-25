@@ -1,0 +1,14 @@
+// Keeps a copy of the finished picture for the next frame's sharp reflections (Godot's colour buffer cannot be copied from).
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 9, rgba16f) uniform restrict readonly image2D color_img;
+layout(set = 0, binding = 24, rgba16f) uniform restrict writeonly image2D prev_img;
+
+void main() {
+	ivec2 p = ivec2(gl_GlobalInvocationID.xy);
+	if (any(greaterThanEqual(p, ivec2(P.screen.xy)))) {
+		return;
+	}
+	imageStore(prev_img, p, imageLoad(color_img, p));
+}
