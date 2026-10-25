@@ -316,6 +316,39 @@ func _ui_test(report: PackedStringArray) -> void:
 		effect_world.voxel_size, effect_world.probe_spacing, effect_world.cascades, effect_world.near_dirs, effect_world.temporal_alpha, gi_strength]
 	report.append("after reset:  " + after)
 	report.append("reset restores the defaults: " + str(after == defaults or true))
+	# Looking around with the split line in the middle of the screen (where Godot reports a captured mouse): the camera must turn.
+	ui.set_split(0.5)
+	await _frames(5)
+	var vc := get_viewport().get_visible_rect().size * 0.5
+	for case in [["right button", false], ["look mode", true]]:
+		var yaw0 := cam.rotation.y
+		if case[1]:
+			set_look_mode(true)
+		else:
+			var press := InputEventMouseButton.new()
+			press.button_index = MOUSE_BUTTON_RIGHT
+			press.pressed = true
+			press.position = vc
+			Input.parse_input_event(press)
+		await _frames(2)
+		for i in 10:
+			var mv := InputEventMouseMotion.new()
+			mv.position = vc
+			mv.relative = Vector2(20, 0)
+			Input.parse_input_event(mv)
+			await _frames(1)
+		report.append("look around with split view on (%s): camera turned %.1f degrees (expected about -34)" % [case[0], rad_to_deg(cam.rotation.y - yaw0)])
+		if case[1]:
+			set_look_mode(false)
+		else:
+			var release := InputEventMouseButton.new()
+			release.button_index = MOUSE_BUTTON_RIGHT
+			release.pressed = false
+			release.position = vc
+			Input.parse_input_event(release)
+		await _frames(2)
+		report.append("  mouse free again afterwards: %s" % str(mouse_is_free()))
+	ui.set_split(-1.0)
 
 
 ## Before / after of the jitter (A) and the edge fallback (B): the same close views with each combination, camera still (settled)
@@ -539,7 +572,7 @@ func mode_text() -> String:
 
 ## True when the cursor is free for the panel and the props (editor mode, right button not held).
 func mouse_is_free() -> bool:
-	return hidden_run or not (look_mode or _rmb_held)
+	return not (look_mode or _rmb_held)
 
 
 func teleport(pose_name: String) -> void:
@@ -586,7 +619,10 @@ func _start_interactive() -> void:
 	ui.setup(self)
 
 
-func _unhandled_input(event: InputEvent) -> void:
+## Camera look is handled here, before the panel sees the event: with the mouse captured, Godot reports it at the centre of the
+## screen, and whatever control sits there (the split-view line, the panel) would otherwise take the motion and the camera would
+## not turn.
+func _input(event: InputEvent) -> void:
 	if not interactive:
 		return
 	if event is InputEventKey and event.pressed and not event.echo:
@@ -596,23 +632,28 @@ func _unhandled_input(event: InputEvent) -> void:
 			set_look_mode(not look_mode)
 			get_viewport().set_input_as_handled()
 			return
-	if event is InputEventMouseButton:
-		var mb := event as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_RIGHT and not look_mode:
-			_rmb_held = mb.pressed
-			_apply_mouse_mode()
-			get_viewport().set_input_as_handled()
-			return
-		if mb.pressed and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
-			fly_speed = clampf(fly_speed * (1.25 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 0.8), 0.5, 40.0)
-			get_viewport().set_input_as_handled()
-			return
+	if event is InputEventMouseButton and (event as InputEventMouseButton).button_index == MOUSE_BUTTON_RIGHT and not look_mode:
+		_rmb_held = (event as InputEventMouseButton).pressed
+		_apply_mouse_mode()
+		get_viewport().set_input_as_handled()
+		return
 	if event is InputEventMouseMotion and not mouse_is_free():
 		var mm := event as InputEventMouseMotion
 		_yaw -= mm.relative.x * 0.003
 		_pitch = clampf(_pitch - mm.relative.y * 0.003, -1.5, 1.5)
 		cam.rotation = Vector3(_pitch, _yaw, 0.0)
+		get_viewport().set_input_as_handled()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if not interactive:
 		return
+	if event is InputEventMouseButton:
+		var mb := event as InputEventMouseButton
+		if mb.pressed and mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN]:
+			fly_speed = clampf(fly_speed * (1.25 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else 0.8), 0.5, 40.0)
+			get_viewport().set_input_as_handled()
+			return
 	if picker != null and mouse_is_free() and picker.handle_input(event):
 		get_viewport().set_input_as_handled()
 		return

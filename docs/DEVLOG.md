@@ -679,3 +679,6 @@ Cost (RX 9070 XT, 1920x1080, nothing moving): final pass 0.72 -> 1.63 ms (edges 
 
 Not fixed: with the camera moving, a light dashed line remains where the box meets the floor (the history is rejected along that
 edge every frame).
+- **Looking around with split view.** With the mouse captured, Godot reports it at the centre of the screen, where the split-view
+  line sits; the line took the motion and the camera did not turn. Camera look (right button, look mode, the quote key) is now
+  handled in `_input`, before any control; `--uitest` checks both ways of looking with the line in the middle.
